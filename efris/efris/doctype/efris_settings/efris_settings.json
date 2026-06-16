@@ -1,0 +1,168 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-06-15 10:50:03.272427",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "details_section",
+  "active",
+  "server_url",
+  "column_break_chwx",
+  "device_number",
+  "private_key",
+  "password",
+  "aes_key",
+  "company_details_section",
+  "legal_name",
+  "company",
+  "branch_id",
+  "line_phone",
+  "email",
+  "column_break_axyq",
+  "tin",
+  "business_name",
+  "brn",
+  "mobile_phone",
+  "place_of_business"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "label": "Active"
+  },
+  {
+   "description": "Endpoint for connecting to URA Efris",
+   "fieldname": "server_url",
+   "fieldtype": "Data",
+   "label": "Server URL"
+  },
+  {
+   "description": "Device Number associated to TIN Number either TCS.... or 1....",
+   "fieldname": "device_number",
+   "fieldtype": "Data",
+   "label": "Device Number"
+  },
+  {
+   "description": ".p12,.px Only Files ",
+   "fieldname": "private_key",
+   "fieldtype": "Attach",
+   "label": "Private Key"
+  },
+  {
+   "description": "Expires after 24hrs",
+   "fieldname": "aes_key",
+   "fieldtype": "Data",
+   "label": "AES Key",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company_details_section",
+   "fieldtype": "Section Break",
+   "label": "Company Details"
+  },
+  {
+   "fieldname": "legal_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Legal Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Company ",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "branch_id",
+   "fieldtype": "Data",
+   "label": "Branch ID"
+  },
+  {
+   "fieldname": "line_phone",
+   "fieldtype": "Data",
+   "label": "Line Phone"
+  },
+  {
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "label": "Email "
+  },
+  {
+   "fieldname": "column_break_axyq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "TIN for the Company associated with EFRIS Account",
+   "fieldname": "tin",
+   "fieldtype": "Data",
+   "label": "TIN"
+  },
+  {
+   "fieldname": "business_name",
+   "fieldtype": "Data",
+   "label": "Business Name"
+  },
+  {
+   "fieldname": "brn",
+   "fieldtype": "Data",
+   "label": "BRN"
+  },
+  {
+   "fieldname": "mobile_phone",
+   "fieldtype": "Data",
+   "label": "Mobile Phone"
+  },
+  {
+   "fieldname": "place_of_business",
+   "fieldtype": "Small Text",
+   "label": "Place Of Business"
+  },
+  {
+   "fieldname": "details_section",
+   "fieldtype": "Section Break",
+   "label": "Details"
+  },
+  {
+   "fieldname": "column_break_chwx",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Password for Unlocking the PK",
+   "fieldname": "password",
+   "fieldtype": "Password",
+   "label": "Password"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-06-15 15:24:18.570298",
+ "modified_by": "Administrator",
+ "module": "Efris",
+ "name": "EFRIS Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
