@@ -483,13 +483,22 @@ def handle_efris_response(doc, response_data, headers, server_url, data_to_post)
         )
 
 @frappe.whitelist()
-def on_send(doc, event):
+def on_send(invoice_name=None, doc=None, event=None):
     ## Main entry point for EFRIS T109 invoice submission
     ## KEY LOGIC: Only doc.save() is called on SUCCESS
     ## If any error occurs, frappe.throw() prevents submission
     
     try:
+        if invoice_name:
+            doc = frappe.get_doc("Sales Invoice", invoice_name)
+        elif isinstance(doc, str):
+            doc = frappe.get_doc("Sales Invoice", doc)
+
+        if not doc:
+            frappe.throw("Sales Invoice is required")
+
         process_invoice_t109(doc)
+        return {"success": True}
         
     except Exception as e:
         ## frappe.throw() prevents document submission

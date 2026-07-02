@@ -44,10 +44,7 @@ app_license = "mit"
 
 # include js in doctype views
 doctype_js = {
-    "Sales Invoice": [
-        "public/js/send_efris_invoice.js",
-        "public/js/sales_invoice.js"
-    ],
+    "Sales Invoice": "public/js/sales_invoice.js",
     "EFRIS Settings": "public/js/efris_settings.js"
 }
 # doctype_js = {"EFRIS Settings" : "public/js/refresh_key.js"}
@@ -248,4 +245,3 @@ doctype_js = {
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
-
