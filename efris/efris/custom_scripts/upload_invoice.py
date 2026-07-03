@@ -1,44 +1,65 @@
 import json
 import uuid
+from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone, timedelta
+
 import frappe
 import requests
 
 from efris.efris.background_tasks.encryption import encrypt_dynamic_json
 
-## East Africa Time (UTC+3)
 EAT_TIMEZONE = timezone(timedelta(hours=3))
-
-## Dynamic tax rate variables
-STANDARD_TAX_RATE = 0.18  # 18%
-ZERO_TAX_RATE = 0.0      # Zero rate
-
-## Tax category codes
+STANDARD_TAX_RATE = 0.18
+ZERO_TAX_RATE = 0.0
 STANDARD_TAX_CODE = "01"
 ZERO_TAX_CODE = "02"
-
-## Buyer type mapping
 BUYER_TYPE_MAPPING = {
     "B2B": "0",
     "B2C": "1",
     "Foreigner": "2",
     "B2G": "3"
 }
-
-## Default values
-DEFAULT_BUYER_TYPE = "1"  # B2C
+DEFAULT_BUYER_TYPE = "1"
+ROW_FIELD_CANDIDATES = {
+    "product_code": [
+        "custom_efris_product_code",
+        "custom_efrsis_product_code",
+    ],
+    "goods_service_name": [
+        "custom_efris_item_name",
+        "custom_goods_service_name",
+    ],
+    "uom_code": [
+        "custom_uom_codeefris",
+        "custom_uom_code_efris",
+        "custom_uom_code",
+    ],
+    "goods_category_id": [
+        "custom_goods_category_id",
+    ],
+}
+ITEM_MASTER_FIELD_MAP = {
+    "product_code": "custom_efris_product_code",
+    "goods_service_name": "custom_goods_service_name",
+    "uom_code": "custom_uom_code_efris",
+    "goods_category_id": "custom_goods_category_id",
+}
 
 
 class EFRISIntegrationError(Exception):
-    ## Custom exception for EFRIS integration errors
     pass
 
 
+TWO_PLACES = Decimal("0.01")
+THREE_PLACES = Decimal("0.001")
+STANDARD_TAX_RATE_DECIMAL = Decimal("0.18")
+ZERO_TAX_RATE_DECIMAL = Decimal("0.00")
+
+
 def log_integration_request(status, url, headers, data, response, error=""):
-    ## Log integration request to Integration Request doctype
     valid_statuses = ["", "Queued", "Authorized", "Completed", "Cancelled", "Failed"]
     status = status if status in valid_statuses else "Failed"
-    
+
     integration_request = frappe.get_doc({
         "doctype": "Integration Request",
         "integration_type": "Remote",
@@ -58,38 +79,282 @@ def log_integration_request(status, url, headers, data, response, error=""):
 
 
 def get_efris_settings():
-    ## Fetch and validate EFRIS settings for current company
-    company = frappe.defaults.get_user_default("company")
-    if not company:
-        raise EFRISIntegrationError("No default company set for the current session")
+    efris_settings = frappe.get_single("EFRIS Settings")
 
-    efris_settings = frappe.get_doc("EFRIS Settings", {"company": company})
-    
-    if not efris_settings.is_active:
+    if not getattr(efris_settings, "active", 0):
         raise EFRISIntegrationError("EFRIS integration is disabled")
-    
+
     if not efris_settings.tin or not efris_settings.brn:
         raise EFRISIntegrationError("TIN and BRN are required in EFRIS Settings")
-    
+
     return efris_settings
 
 
 def clean_brn(brn):
-    ## Remove leading slash and whitespace from BRN
     return brn.strip().lstrip("/") if brn else ""
 
 
-def build_goods_detail(item, order_number):
-    ## Build goods detail object for a single item
+def get_first_available_value(source, fieldnames):
+    for fieldname in fieldnames:
+        value = getattr(source, fieldname, None)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def get_item_efris_data(item_row):
+    item_code = getattr(item_row, "item_code", None)
+    item_fields = list(ITEM_MASTER_FIELD_MAP.values())
+
+    item_master_values = {}
+    if item_code:
+        cached_values = frappe.get_cached_value("Item", item_code, item_fields) or []
+        item_master_values = dict(zip(item_fields, cached_values))
+
     return {
-        "item": item.custom_goods_service_name,
-        "itemCode": item.custom_efrsis_product_code,
-        "qty": item.qty,
-        "unitOfMeasure": item.custom_uom_code_efris,
-        "unitPrice": item.rate,
-        "total": item.amount,
-        "taxRate": str(STANDARD_TAX_RATE),
-        "tax": round(item.amount - item.net_amount, 3),
+        "product_code": str(
+            get_first_available_value(item_row, ROW_FIELD_CANDIDATES["product_code"])
+            or item_master_values.get(ITEM_MASTER_FIELD_MAP["product_code"])
+            or ""
+        ).strip(),
+        "goods_service_name": str(
+            get_first_available_value(item_row, ROW_FIELD_CANDIDATES["goods_service_name"])
+            or item_master_values.get(ITEM_MASTER_FIELD_MAP["goods_service_name"])
+            or getattr(item_row, "item_name", None)
+            or ""
+        ).strip(),
+        "uom_code": str(
+            get_first_available_value(item_row, ROW_FIELD_CANDIDATES["uom_code"])
+            or item_master_values.get(ITEM_MASTER_FIELD_MAP["uom_code"])
+            or ""
+        ).strip(),
+        "goods_category_id": str(
+            get_first_available_value(item_row, ROW_FIELD_CANDIDATES["goods_category_id"])
+            or item_master_values.get(ITEM_MASTER_FIELD_MAP["goods_category_id"])
+            or ""
+        ).strip(),
+    }
+
+
+def get_efris_price_lookup(product_codes):
+    product_codes = [code.strip() for code in product_codes if code and code.strip()]
+    if not product_codes:
+        return {}
+
+    price_rows = frappe.get_all(
+        "EFRIS Prices",
+        filters={"product_code": ["in", product_codes]},
+        fields=["product_code", "unit_price", "tax_rate"],
+        limit_page_length=0,
+    )
+
+    return {
+        row.product_code: {
+            "unit_price": row.unit_price,
+            "tax_rate": row.tax_rate,
+        }
+        for row in price_rows
+        if row.product_code
+    }
+
+
+def sync_sales_invoice_efris_prices(doc, method=None):
+    if isinstance(doc, str):
+        doc = frappe.get_doc("Sales Invoice", doc)
+
+    if not getattr(doc, "items", None):
+        return
+
+    product_codes = [get_item_efris_data(item)["product_code"] for item in doc.items]
+    price_lookup = get_efris_price_lookup(product_codes)
+
+    for item in doc.items:
+        product_code = get_item_efris_data(item)["product_code"]
+        if not product_code or product_code not in price_lookup:
+            continue
+
+        item.custom_efris_unit_price = price_lookup[product_code]["unit_price"]
+
+
+def get_item_efris_unit_price(item):
+    efris_price = getattr(item, "custom_efris_unit_price", None)
+    if efris_price not in (None, ""):
+        return efris_price
+
+    product_code = get_item_efris_data(item)["product_code"]
+    if not product_code:
+        raise EFRISIntegrationError(
+            f"Missing EFRIS Product Code for invoice item row {getattr(item, 'idx', '')}"
+        )
+
+    raise EFRISIntegrationError(
+        f"Missing EFRIS Unit Price for product code {product_code} on invoice item row {getattr(item, 'idx', '')}"
+    )
+
+
+def get_item_efris_price_data(item, price_lookup):
+    product_code = get_item_efris_data(item)["product_code"]
+    if not product_code:
+        raise EFRISIntegrationError(
+            f"Missing EFRIS Product Code for invoice item row {getattr(item, 'idx', '')}"
+        )
+
+    price_data = price_lookup.get(product_code)
+    if not price_data:
+        raise EFRISIntegrationError(
+            f"Missing EFRIS Prices record for product code {product_code} on invoice item row {getattr(item, 'idx', '')}"
+        )
+
+    if price_data.get("unit_price") in (None, ""):
+        raise EFRISIntegrationError(
+            f"Missing EFRIS unit price in EFRIS Prices for product code {product_code}"
+        )
+
+    if price_data.get("tax_rate") in (None, ""):
+        raise EFRISIntegrationError(
+            f"Missing EFRIS tax rate in EFRIS Prices for product code {product_code}"
+        )
+
+    return price_data
+
+
+def to_decimal(value):
+    if value in (None, ""):
+        return Decimal("0")
+
+    return Decimal(str(value))
+
+
+def truncate_two_decimals(value):
+    return to_decimal(value).quantize(TWO_PLACES, rounding=ROUND_DOWN)
+
+
+def truncate_three_decimals(value):
+    return to_decimal(value).quantize(THREE_PLACES, rounding=ROUND_DOWN)
+
+
+def normalize_tax_rate(value):
+    return truncate_two_decimals(value)
+
+
+def get_tax_category_details(tax_rate):
+    if tax_rate in (None, ""):
+        raise EFRISIntegrationError("Missing EFRIS tax rate. Please sync EFRIS Prices first.")
+
+    normalized_tax_rate = normalize_tax_rate(tax_rate)
+
+    if normalized_tax_rate == STANDARD_TAX_RATE_DECIMAL:
+        return STANDARD_TAX_CODE, str(STANDARD_TAX_RATE)
+
+    if normalized_tax_rate == ZERO_TAX_RATE_DECIMAL:
+        return ZERO_TAX_CODE, str(int(ZERO_TAX_RATE))
+
+    raise EFRISIntegrationError(
+        f"Unsupported EFRIS tax rate {tax_rate}. Only 0.18 and 0 are currently supported."
+    )
+
+
+def calculate_line_tax(total_amount, tax_rate):
+    gross_amount = to_decimal(total_amount)
+    rate = normalize_tax_rate(tax_rate)
+
+    if rate <= 0:
+        return Decimal("0.000")
+
+    net_amount = gross_amount / (Decimal("1") + rate)
+    return truncate_three_decimals(gross_amount - net_amount)
+
+
+def calculate_invoice_totals(goods_details):
+    gross_amount = Decimal("0.00")
+    tax_amount = Decimal("0.000")
+    tax_buckets = {
+        STANDARD_TAX_CODE: {
+            "taxCategoryCode": STANDARD_TAX_CODE,
+            "netAmount": Decimal("0.000"),
+            "taxRate": str(STANDARD_TAX_RATE),
+            "taxAmount": Decimal("0.000"),
+            "grossAmount": Decimal("0.00"),
+        },
+        ZERO_TAX_CODE: {
+            "taxCategoryCode": ZERO_TAX_CODE,
+            "netAmount": Decimal("0.000"),
+            "taxRate": str(int(ZERO_TAX_RATE)),
+            "taxAmount": Decimal("0.000"),
+            "grossAmount": Decimal("0.00"),
+        },
+    }
+
+    for goods_detail in goods_details:
+        line_gross_amount = to_decimal(goods_detail.get("total"))
+        line_tax_amount = to_decimal(goods_detail.get("tax"))
+        line_net_amount = truncate_three_decimals(line_gross_amount - line_tax_amount)
+        tax_category_code, tax_rate_string = get_tax_category_details(goods_detail.get("taxRate"))
+
+        gross_amount += line_gross_amount
+        tax_amount += line_tax_amount
+
+        bucket = tax_buckets[tax_category_code]
+        bucket["taxRate"] = tax_rate_string
+        bucket["grossAmount"] += line_gross_amount
+        bucket["taxAmount"] += line_tax_amount
+        bucket["netAmount"] += line_net_amount
+
+    gross_amount = truncate_two_decimals(gross_amount)
+    tax_amount = truncate_three_decimals(tax_amount)
+    net_amount = truncate_three_decimals(gross_amount - tax_amount)
+
+    formatted_tax_details = []
+    for tax_category_code in [STANDARD_TAX_CODE, ZERO_TAX_CODE]:
+        bucket = tax_buckets[tax_category_code]
+        formatted_tax_details.append({
+            "taxCategoryCode": bucket["taxCategoryCode"],
+            "netAmount": float(truncate_three_decimals(bucket["netAmount"])),
+            "taxRate": bucket["taxRate"],
+            "taxAmount": float(truncate_three_decimals(bucket["taxAmount"])),
+            "grossAmount": float(truncate_two_decimals(bucket["grossAmount"])),
+            "exciseUnit": "",
+            "exciseCurrency": "",
+            "taxRateName": "",
+        })
+
+    return {
+        "gross_amount": gross_amount,
+        "tax_amount": tax_amount,
+        "net_amount": net_amount,
+        "tax_details": formatted_tax_details,
+    }
+
+
+def build_goods_detail(item, order_number, price_lookup):
+    efris_item_data = get_item_efris_data(item)
+    price_data = get_item_efris_price_data(item, price_lookup)
+
+    if not efris_item_data["product_code"]:
+        raise EFRISIntegrationError(
+            f"Missing EFRIS Product Code for invoice item row {getattr(item, 'idx', '')} item {getattr(item, 'item_code', '')}"
+        )
+
+    if not efris_item_data["uom_code"]:
+        raise EFRISIntegrationError(
+            f"Missing EFRIS UOM Code for invoice item row {getattr(item, 'idx', '')} item {getattr(item, 'item_code', '')}"
+        )
+
+    qty = to_decimal(item.qty)
+    unit_price = truncate_two_decimals(price_data.get("unit_price"))
+    _tax_category_code, tax_rate_string = get_tax_category_details(price_data.get("tax_rate"))
+    total = truncate_two_decimals(qty * unit_price)
+    tax = calculate_line_tax(total, price_data.get("tax_rate"))
+
+    return {
+        "item": efris_item_data["goods_service_name"],
+        "itemCode": efris_item_data["product_code"],
+        "qty": float(qty),
+        "unitOfMeasure": "PP",
+        "unitPrice": float(unit_price),
+        "total": float(total),
+        "taxRate": tax_rate_string,
+        "tax": float(tax),
         "discountTotal": "",
         "discountTaxRate": "",
         "orderNumber": str(order_number),
@@ -98,7 +363,7 @@ def build_goods_detail(item, order_number):
         "exciseFlag": "2",
         "categoryId": "",
         "categoryName": "",
-        "goodsCategoryId": item.custom_goods_category_id,
+        "goodsCategoryId": efris_item_data["goods_category_id"],
         "goodsCategoryName": "",
         "exciseRate": "",
         "exciseRule": "",
@@ -124,27 +389,21 @@ def build_goods_detail(item, order_number):
 
 
 def process_invoice_items(items):
-    ## Process all invoice items and build goods details
     goods_details = []
-    total_tax_amount = 0
     item_count = 0
+    product_codes = [get_item_efris_data(item)["product_code"] for item in items]
+    price_lookup = get_efris_price_lookup(product_codes)
 
     for item in items:
         item_count += 1
-        
-        ## Calculate tax amount
-        tax_amount = round(item.amount - item.net_amount, 3)
-        total_tax_amount += tax_amount
-        
-        ## Build goods detail
-        goods_detail = build_goods_detail(item, len(goods_details))
+        goods_detail = build_goods_detail(item, len(goods_details), price_lookup)
         goods_details.append(goods_detail)
 
-    return goods_details, total_tax_amount, item_count
+    invoice_totals = calculate_invoice_totals(goods_details)
+    return goods_details, invoice_totals, item_count
 
 
 def build_seller_details(efris_settings, doc):
-    ## Build seller details section
     return {
         "tin": efris_settings.tin,
         "ninBrn": clean_brn(efris_settings.brn),
@@ -153,7 +412,7 @@ def build_seller_details(efris_settings, doc):
         "address": "999 MBOGO ROAD OPPOSITE MBOGO COLLEGE KAWEMPE KAMPALA KAWEMPE DIVISION NORTH KAWEMPE DIVISION KAWEMPE 1",
         "mobilePhone": efris_settings.mobile_phone,
         "linePhone": efris_settings.line_phone,
-        "emailAddress": efris_settings.email_phone,
+        "emailAddress": efris_settings.email or "",
         "placeOfBusiness": efris_settings.place_of_business,
         "referenceNo": doc.name,
         "branchId": "",
@@ -162,7 +421,6 @@ def build_seller_details(efris_settings, doc):
 
 
 def build_basic_information(efris_settings, doc, datetime_combined):
-    ## Build basic information section
     owner_full_name = frappe.db.get_value(
         "User",
         doc.owner,
@@ -186,9 +444,8 @@ def build_basic_information(efris_settings, doc, datetime_combined):
 
 
 def build_buyer_details(doc):
-    ## Build buyer details section
     buyer_type = BUYER_TYPE_MAPPING.get(doc.customer_group, DEFAULT_BUYER_TYPE)
-    
+
     return {
         "buyerTin": doc.tax_id,
         "buyerNinBrn": "",
@@ -210,7 +467,6 @@ def build_buyer_details(doc):
 
 
 def build_buyer_extend():
-    ## Build buyer extend section
     return {
         "propertyType": "",
         "district": "",
@@ -223,45 +479,15 @@ def build_buyer_extend():
     }
 
 
-def build_tax_details(total_tax_amount, gross_amount):
-    ## Build tax details with two categories: zero rate and standard 18%
-    tax_details = []
-    
-    ## Standard 18% tax category
-    standard_tax = {
-        "taxCategoryCode": STANDARD_TAX_CODE,
-        "netAmount": round(gross_amount - total_tax_amount, 3),
-        "taxRate": str(STANDARD_TAX_RATE),
-        "taxAmount": round(total_tax_amount, 3),
-        "grossAmount": round(gross_amount, 3),
-        "exciseUnit": "",
-        "exciseCurrency": "",
-        "taxRateName": "",
-    }
-    tax_details.append(standard_tax)
-    
-    ## Zero rate tax category (empty/not applicable)
-    zero_tax = {
-        "taxCategoryCode": ZERO_TAX_CODE,
-        "netAmount": 0,
-        "taxRate": str(ZERO_TAX_RATE),
-        "taxAmount": 0,
-        "grossAmount": 0,
-        "exciseUnit": "",
-        "exciseCurrency": "",
-        "taxRateName": "",
-    }
-    tax_details.append(zero_tax)
-    
-    return tax_details
+def build_tax_details(invoice_totals):
+    return invoice_totals["tax_details"]
 
 
-def build_summary(doc, total_tax_amount, item_count):
-    ## Build summary section
+def build_summary(invoice_totals, item_count):
     return {
-        "netAmount": round(doc.total - total_tax_amount, 3),
-        "taxAmount": round(total_tax_amount, 3),
-        "grossAmount": round(doc.total, 3),
+        "netAmount": float(invoice_totals["net_amount"]),
+        "taxAmount": float(invoice_totals["tax_amount"]),
+        "grossAmount": float(invoice_totals["gross_amount"]),
         "itemCount": item_count,
         "modeCode": "0",
         "remarks": "We appreciate your continued support",
@@ -270,7 +496,6 @@ def build_summary(doc, total_tax_amount, item_count):
 
 
 def build_extend():
-    ## Build extend section
     return {
         "reason": "",
         "reasonCode": ""
@@ -278,7 +503,6 @@ def build_extend():
 
 
 def build_import_services_seller():
-    ## Build import services seller section
     return {
         "importBusinessName": "",
         "importEmailAddress": "",
@@ -291,7 +515,6 @@ def build_import_services_seller():
 
 
 def build_airline_goods_details():
-    ## Build airline goods details section
     return [{
         "item": "",
         "itemCode": "",
@@ -323,7 +546,6 @@ def build_airline_goods_details():
 
 
 def build_edc_details():
-    ## Build EDC details section
     return {
         "tankNo": "",
         "pumpNo": "",
@@ -336,32 +558,29 @@ def build_edc_details():
 
 
 def build_invoice_data(efris_settings, doc, datetime_combined):
-    ## Build complete invoice data structure for EFRIS T109 submission
-    goods_details, total_tax_amount, item_count = process_invoice_items(doc.items)
-    
+    goods_details, invoice_totals, item_count = process_invoice_items(doc.items)
+
     if not goods_details:
         raise EFRISIntegrationError("No items found in the invoice")
-    
-    ## Build invoice data structure
+
     invoice_data = {
         "sellerDetails": build_seller_details(efris_settings, doc),
         "basicInformation": build_basic_information(efris_settings, doc, datetime_combined),
         "buyerDetails": build_buyer_details(doc),
         "buyerExtend": build_buyer_extend(),
         "goodsDetails": goods_details,
-        "taxDetails": build_tax_details(total_tax_amount, doc.total),
-        "summary": build_summary(doc, total_tax_amount, item_count),
+        "taxDetails": build_tax_details(invoice_totals),
+        "summary": build_summary(invoice_totals, item_count),
         "extend": build_extend(),
         "importServicesSeller": build_import_services_seller(),
         "airlineGoodsDetails": build_airline_goods_details(),
         "edcDetails": build_edc_details(),
     }
     
-    return invoice_data, total_tax_amount, item_count
+    return invoice_data, invoice_totals, item_count
 
 
-def build_global_info(efris_settings, doc, total_tax_amount, goods_details):
-    ## Build global info section for T109
+def build_global_info(efris_settings, doc, invoice_totals, goods_details):
     data_exchange_id = uuid.uuid4().hex[:32]
     current_time = datetime.now(EAT_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -397,14 +616,13 @@ def build_global_info(efris_settings, doc, total_tax_amount, goods_details):
             "operatorName": owner_full_name,
             "itemDescription": item_description,
             "currency": "UGX",
-            "grossAmount": str(round(doc.total, 2)),
-            "taxAmount": str(round(total_tax_amount, 2)),
+            "grossAmount": str(invoice_totals["gross_amount"]),
+            "taxAmount": str(truncate_two_decimals(invoice_totals["tax_amount"])),
         },
     }
 
 
 def encrypt_invoice_data(invoice_data):
-    ## Encrypt invoice data using encryption service
     frappe.log_error(
         title="EFRIS Invoice Data Before Encryption",
         message=json.dumps(invoice_data, indent=2)
@@ -418,7 +636,6 @@ def encrypt_invoice_data(invoice_data):
 
 
 def build_post_data(encrypted_result, global_info):
-    ## Build complete POST data for T109 API request
     return {
         "data": {
             "content": encrypted_result["encrypted_content"],
@@ -438,20 +655,19 @@ def build_post_data(encrypted_result, global_info):
 
 
 def submit_to_efris(efris_settings, data_to_post):
-    ## Submit invoice data to EFRIS T109 API
     headers = {"Content-Type": "application/json"}
     server_url = efris_settings.server_url
-    
+
     try:
         response = requests.post(server_url, json=data_to_post, headers=headers, timeout=30)
         response.raise_for_status()
         return response.json(), headers, server_url
-        
+
     except requests.exceptions.Timeout:
         error_msg = "Request timed out. Please try again."
         log_integration_request('Failed', server_url, headers, data_to_post, {}, error_msg)
         raise EFRISIntegrationError(error_msg)
-        
+
     except requests.exceptions.RequestException as e:
         error_msg = f"API request failed: {str(e)}"
         log_integration_request('Failed', server_url, headers, data_to_post, {}, error_msg)
@@ -459,35 +675,22 @@ def submit_to_efris(efris_settings, data_to_post):
 
 
 def handle_efris_response(doc, response_data, headers, server_url, data_to_post):
-    ## Handle EFRIS T109 API response
-    ## Only saves document on SUCCESS - otherwise throws error to prevent submission
-    
     return_message = response_data.get("returnStateInfo", {}).get("returnMessage", "")
-    
-    ## Check if successful
+
     if return_message == "SUCCESS":
         frappe.msgprint("Sales Invoice successfully submitted to EFRIS URA via T109.")
-        
-        ## Log successful request
         log_integration_request('Completed', server_url, headers, data_to_post, response_data)
-        
-        ## ONLY save on success
         doc.save()
     else:
-        ## Log failed request
         log_integration_request('Failed', server_url, headers, data_to_post, response_data, return_message)
-        ## THROW ERROR - prevents submission, document stays in draft
         frappe.throw(
             title="EFRIS T109 Submission Failed",
             msg=return_message
         )
 
+
 @frappe.whitelist()
 def on_send(invoice_name=None, doc=None, event=None):
-    ## Main entry point for EFRIS T109 invoice submission
-    ## KEY LOGIC: Only doc.save() is called on SUCCESS
-    ## If any error occurs, frappe.throw() prevents submission
-    
     try:
         if invoice_name:
             doc = frappe.get_doc("Sales Invoice", invoice_name)
@@ -497,63 +700,25 @@ def on_send(invoice_name=None, doc=None, event=None):
         if not doc:
             frappe.throw("Sales Invoice is required")
 
+        sync_sales_invoice_efris_prices(doc)
         process_invoice_t109(doc)
         return {"success": True}
-        
+
     except Exception as e:
-        ## frappe.throw() prevents document submission
-        ## Document stays in Draft status
         frappe.throw(str(e))
 
 
 def process_invoice_t109(doc):
-    ## Process T109 invoice submission
-    ## KEY LOGIC:
-    ## - If API returns SUCCESS: doc.save() is called -> document is submitted
-    ## - If API returns FAILURE: frappe.throw() is called -> document stays in Draft
-    ## - If network error: frappe.throw() is called -> document stays in Draft
-    
-    ## Get EFRIS settings
     efris_settings = get_efris_settings()
-    
-    ## Prepare datetime
     datetime_combined = f"{doc.posting_date} {doc.posting_time}"
-    
-    ## Build invoice data
-    invoice_data, total_tax_amount, item_count = build_invoice_data(efris_settings, doc, datetime_combined)
-    
-    ## Encrypt invoice data
+    invoice_data, invoice_totals, item_count = build_invoice_data(efris_settings, doc, datetime_combined)
     encrypted_result = encrypt_invoice_data(invoice_data)
-    
-    ## Build global info for T109
     global_info = build_global_info(
-        efris_settings, 
-        doc, 
-        total_tax_amount, 
+        efris_settings,
+        doc,
+        invoice_totals,
         invoice_data["goodsDetails"]
     )
-    
-    ## Build complete POST data
     data_to_post = build_post_data(encrypted_result, global_info)
-    
-    ## Submit to EFRIS
     response_data, headers, server_url = submit_to_efris(efris_settings, data_to_post)
-    
-    ## Handle response
-    ## KEY: handle_efris_response() either:
-    ##      - calls doc.save() on SUCCESS
-    ##      - calls frappe.throw() on FAILURE (prevents submission)
     handle_efris_response(doc, response_data, headers, server_url, data_to_post)
-
-
-def validate_efris_fields(doc, method):
-    ## Validate EFRIS fields before submission for T109
-    if not doc.custom_efris_invoice:
-        return
-    
-    ## Validate required fields
-    if not doc.tax_id:
-        frappe.throw("Customer TIN is required for EFRIS invoices")
-    
-    if not doc.items:
-        frappe.throw("Invoice must have at least one item")

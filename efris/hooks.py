@@ -141,34 +141,22 @@ doctype_js = {
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	# "Sales Invoice": {
+	# 	"before_save": "efris.efris.custom_scripts.upload_invoice.sync_sales_invoice_efris_prices"
+	# }
+}
 
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"efris.tasks.all"
-# 	],
-# 	"daily": [
-# 		"efris.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"efris.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"efris.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"efris.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"cron": {
+		"0 0 * * *": [
+			"efris.efris.background_tasks.efris_price_sync.sync_daily_efris_prices"
+		]
+	}
+}
 
 # Testing
 # -------
