@@ -13,7 +13,6 @@ import binascii
 
 API_BASE_URL = "https://efristest.ura.go.ug/efrisws/ws/taapp/getInformation"
 CACHE_KEY_AES = "efris_cached_aes_key"
-PFX_PASSWORD = b"0772835195"
 
 def resolve_file_path(file_url):
     """Resolve file path from Frappe file URL"""
@@ -59,6 +58,18 @@ def get_private_key(pfx_path, password):
         except:
             pass
         raise Exception(f"Failed to load private key: {str(e)}")
+
+
+def get_pfx_password(settings):
+    try:
+        password = settings.get_password("password")
+    except Exception:
+        password = None
+
+    if not password:
+        password = getattr(settings, "password", None)
+
+    return password or ""
 
 def decrypt_passwordDes(passwordDes_b64, private_key):
     """
@@ -256,7 +267,7 @@ def test_efris_complete_flow():
         
         # Load private key
         file_path = resolve_file_path(settings.private_key)
-        private_key = get_private_key(file_path, PFX_PASSWORD)
+        private_key = get_private_key(file_path, get_pfx_password(settings))
         
         # Make T104 request
         t104_response = make_t104_request(settings.device_number, settings.tin)

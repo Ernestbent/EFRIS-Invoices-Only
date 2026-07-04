@@ -19,10 +19,9 @@ from efris.efris.background_tasks.encryption import encrypt_dynamic_json
 
 EAT_TIMEZONE = timezone(timedelta(hours=3))
 T127_PAGE_SIZE = "10"
-DEFAULT_PFX_PASSWORD = "0772835195"
 
 
-def log_integration_request(status, url, headers, data, response, service="T127", error=""):
+def log_integration_request(status, url, headers, data, response, service="T127", error="", aes_key=""):
     try:
         frappe.get_doc({
             "doctype": "Integration Request",
@@ -31,6 +30,7 @@ def log_integration_request(status, url, headers, data, response, service="T127"
             "is_remote_request": True,
             "method": "POST",
             "status": status,
+            "custom_aes_key": aes_key or "",
             "url": url,
             "request_headers": json.dumps(headers, indent=4),
             "data": json.dumps(data, indent=4),
@@ -115,7 +115,7 @@ def get_pfx_password(settings):
     if not password:
         password = getattr(settings, "password", None)
 
-    return password or DEFAULT_PFX_PASSWORD
+    return password or ""
 
 
 def encrypt_payload(payload, aes_key_hex, private_key):
@@ -145,8 +145,15 @@ def decrypt_response_content(encrypted_content, aes_key_hex):
 
     try:
         encrypted_bytes = gzip.decompress(compressed_bytes)
-    except Exception:
-        encrypted_bytes = compressed_bytes
+    except Exception as gzip_error:
+        for i in range(1, 5):
+            try:
+                encrypted_bytes = gzip.decompress(compressed_bytes[:-i])
+                break
+            except Exception:
+                continue
+        else:
+            encrypted_bytes = compressed_bytes
 
     remainder = len(encrypted_bytes) % AES.block_size
     if remainder:
@@ -160,7 +167,17 @@ def decrypt_response_content(encrypted_content, aes_key_hex):
     except ValueError:
         decrypted_bytes = decrypted_padded
 
-    return json.loads(decrypted_bytes.decode("utf-8"))
+    try:
+        decoded_text = decrypted_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        decoded_text = decrypted_bytes.decode("latin-1")
+
+    try:
+        return json.loads(decoded_text)
+    except json.JSONDecodeError as exc:
+        raise frappe.ValidationError(
+            f"Failed to parse decrypted T127 response as JSON using AES key {aes_key_hex}: {exc}"
+        )
 
 
 def get_record_value(record, fieldname):
@@ -202,7 +219,7 @@ def build_t127_request(settings, private_key, page_no="1"):
 
     request_time = datetime.now(EAT_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
-    return {
+    request_data = {
         "data": {
             "content": encrypted_result["encrypted_content"],
             "signature": encrypted_result["signature"],
@@ -241,9 +258,10 @@ def build_t127_request(settings, private_key, page_no="1"):
             "returnMessage": "",
         },
     }
+    return request_data, encrypted_result.get("aes_key", "")
 
 
-def send_efris_request(settings, request_data):
+def send_efris_request(settings, request_data, aes_key=""):
     headers = {"Content-Type": "application/json"}
     service = "T127"
 
@@ -265,6 +283,7 @@ def send_efris_request(settings, request_data):
             {},
             service=service,
             error=str(exc),
+            aes_key=aes_key,
         )
         raise
     except ValueError as exc:
@@ -277,6 +296,7 @@ def send_efris_request(settings, request_data):
             {"raw_response": raw_response},
             service=service,
             error=f"Failed to decode JSON response: {exc}",
+            aes_key=aes_key,
         )
         raise
 
@@ -293,6 +313,7 @@ def send_efris_request(settings, request_data):
             response_data,
             service=service,
             error=f"EFRIS returned error {return_code}: {return_message}",
+            aes_key=aes_key,
         )
         frappe.throw(f"EFRIS returned error {return_code}: {return_message}")
 
@@ -305,6 +326,7 @@ def send_efris_request(settings, request_data):
             response_data,
             service=service,
             error=f"EFRIS returned error: {return_message}",
+            aes_key=aes_key,
         )
         frappe.throw(f"EFRIS returned error: {return_message}")
 
@@ -315,6 +337,7 @@ def send_efris_request(settings, request_data):
         request_data,
         response_data,
         service=service,
+        aes_key=aes_key,
     )
     return response_data
 
@@ -325,14 +348,17 @@ def get_all_efris_records(settings, private_key):
     records = []
 
     while page_no <= page_count:
-        request_data = build_t127_request(settings, private_key, page_no=page_no)
-        response_data = send_efris_request(settings, request_data)
+        request_data, aes_key_used = build_t127_request(settings, private_key, page_no=page_no)
+        response_data = send_efris_request(settings, request_data, aes_key=aes_key_used)
 
         encrypted_content = response_data.get("data", {}).get("content")
         if not encrypted_content:
             break
 
-        decrypted_data = decrypt_response_content(encrypted_content, settings.aes_key)
+        decrypted_data = decrypt_response_content(
+            encrypted_content,
+            aes_key_used or settings.aes_key,
+        )
         records.extend(decrypted_data.get("records") or [])
 
         page_info = decrypted_data.get("page") or {}

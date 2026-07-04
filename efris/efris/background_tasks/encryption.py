@@ -7,24 +7,45 @@ from Crypto.Util.Padding import pad
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 
-from autozoneura.autozoneura.background_tasks.efris_key_manager import (
+from efris.efris.background_tasks.efris_key_manager import (
     get_private_key,
     resolve_file_path,
-    PFX_PASSWORD,
+    get_pfx_password,
     test_efris_complete_flow
 )
 
 CACHE_KEY_AES = "efris_cached_aes_key"
 
+def get_cached_aes_key_hex():
+    """Retrieve AES key hex from cache, then settings, then regenerate."""
+    aes_key_hex = frappe.cache().get_value(CACHE_KEY_AES)
+    if aes_key_hex:
+        return aes_key_hex
+
+    settings = frappe.get_doc("EFRIS Settings", "EFRIS Settings")
+    saved_aes_key = (getattr(settings, "aes_key", None) or "").strip()
+    if saved_aes_key:
+        try:
+            binascii.unhexlify(saved_aes_key)
+        except Exception:
+            frappe.log_error(
+                title="EFRIS AES Key Validation Error",
+                message=f"Saved AES key in EFRIS Settings is not valid hex: {saved_aes_key}",
+            )
+        else:
+            frappe.cache().set_value(CACHE_KEY_AES, saved_aes_key, expires_in_sec=86400)
+            return saved_aes_key
+
+    result = test_efris_complete_flow()
+    if result.get("success"):
+        aes_key_hex = result.get("aes_key")
+    else:
+        frappe.throw(f"Failed to regenerate AES key: {result.get('error')}")
+    return aes_key_hex
+
 def get_cached_aes_key():
     """Retrieve AES key from cache or regenerate."""
-    aes_key_hex = frappe.cache().get_value(CACHE_KEY_AES)
-    if not aes_key_hex:
-        result = test_efris_complete_flow()
-        if result.get("success"):
-            aes_key_hex = result.get("aes_key")
-        else:
-            frappe.throw(f"Failed to regenerate AES key: {result.get('error')}")
+    aes_key_hex = get_cached_aes_key_hex()
     try:
         return binascii.unhexlify(aes_key_hex)
     except Exception as e:
@@ -58,7 +79,11 @@ def encrypt_dynamic_json(json_input=None):
         if not settings.private_key:
             frappe.throw("Private key file not configured in EFRIS Settings")
 
-        private_key = get_private_key(resolve_file_path(settings.private_key), PFX_PASSWORD)
+        private_key = get_private_key(
+            resolve_file_path(settings.private_key),
+            get_pfx_password(settings),
+        )
+        aes_key_hex = get_cached_aes_key_hex()
         aes_key = get_cached_aes_key()
 
         payload = json.loads(json_input) if isinstance(json_input, str) else json_input or {"sample": "data"}
@@ -68,7 +93,8 @@ def encrypt_dynamic_json(json_input=None):
         return {
             "success": True,
             "encrypted_content": result["content"],
-            "signature": result["signature"]
+            "signature": result["signature"],
+            "aes_key": aes_key_hex,
         }
 
     except Exception as e:

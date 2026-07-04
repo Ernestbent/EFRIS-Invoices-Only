@@ -30,7 +30,7 @@ def get_efris_settings():
     }
 
 
-def log_integration_request(status, url, headers, data, response, service=""):
+def log_integration_request(status, url, headers, data, response, service="", aes_key=""):
     """Log integration request"""
     try:
         frappe.get_doc({
@@ -40,6 +40,7 @@ def log_integration_request(status, url, headers, data, response, service=""):
             "is_remote_request": True,
             "method": "POST",
             "status": status,
+            "custom_aes_key": aes_key or "",
             "url": url,
             "request_headers": json.dumps(headers, indent=4),
             "data": json.dumps(data, indent=4),
@@ -121,7 +122,7 @@ def build_t127_request(payload, settings):
     current_time = datetime.now(eat_timezone).strftime("%Y-%m-%d %H:%M:%S")
     
     # Build request
-    return {
+    request_data = {
         "data": {
             "content": encrypted_result["encrypted_content"],
             "signature": encrypted_result["signature"],
@@ -160,9 +161,10 @@ def build_t127_request(payload, settings):
             "returnMessage": ""
         }
     }
+    return request_data, encrypted_result.get("aes_key", "")
 
 
-def send_efris_request(server_url, request_data):
+def send_efris_request(server_url, request_data, aes_key=""):
     """Send request to EFRIS server"""
     headers = {"Content-Type": "application/json"}
     
@@ -171,8 +173,10 @@ def send_efris_request(server_url, request_data):
         response.raise_for_status()
         return response.json()
     except requests.exceptions.Timeout:
+        log_integration_request("Failed", server_url, headers, request_data, {}, "T127 Stock Query", aes_key=aes_key)
         frappe.throw(_("EFRIS request timed out. Please try again."))
     except requests.exceptions.RequestException as e:
+        log_integration_request("Failed", server_url, headers, request_data, {}, "T127 Stock Query", aes_key=aes_key)
         frappe.throw(_(f"EFRIS request failed: {str(e)}"))
 
 
@@ -183,14 +187,14 @@ def get_efris_stock_all(settings):
         "pageSize": ""
     }
     
-    request_data = build_t127_request(payload, settings)
+    request_data, aes_key_used = build_t127_request(payload, settings)
     
     try:
-        response_data = send_efris_request(settings['url'], request_data)
+        response_data = send_efris_request(settings['url'], request_data, aes_key=aes_key_used)
     except Exception as e:
         frappe.throw(_(f"EFRIS request failed: {str(e)}"))
     
-    log_integration_request('Completed', settings['url'], {}, request_data, response_data, "T127 Stock Query")
+    log_integration_request('Completed', settings['url'], {}, request_data, response_data, "T127 Stock Query", aes_key=aes_key_used)
     
     return_message = response_data.get("returnStateInfo", {}).get("returnMessage", "")
     
@@ -203,7 +207,10 @@ def get_efris_stock_all(settings):
     if not encrypted_content:
         frappe.throw(_("No data returned from EFRIS"))
     
-    decrypted_data = decrypt_aes_content(encrypted_content, settings["aes_key"])
+    decrypted_data = decrypt_aes_content(
+        encrypted_content,
+        aes_key_used or settings["aes_key"],
+    )
     
     return decrypted_data
 

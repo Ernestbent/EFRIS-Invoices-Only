@@ -1,10 +1,14 @@
 import json
 import uuid
+import gzip
+import base64
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone, timedelta
 
 import frappe
 import requests
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 
 from efris.efris.background_tasks.encryption import encrypt_dynamic_json
 
@@ -56,7 +60,7 @@ STANDARD_TAX_RATE_DECIMAL = Decimal("0.18")
 ZERO_TAX_RATE_DECIMAL = Decimal("0.00")
 
 
-def log_integration_request(status, url, headers, data, response, error=""):
+def log_integration_request(status, url, headers, data, response, error="", aes_key=""):
     valid_statuses = ["", "Queued", "Authorized", "Completed", "Cancelled", "Failed"]
     status = status if status in valid_statuses else "Failed"
 
@@ -67,6 +71,7 @@ def log_integration_request(status, url, headers, data, response, error=""):
         "integration_request_service": "T109 Goods Upload",
         "is_remote_request": True,
         "status": status,
+        "custom_aes_key": aes_key or "",
         "url": url,
         "request_headers": json.dumps(headers, indent=4),
         "data": json.dumps(data, indent=4),
@@ -174,22 +179,6 @@ def sync_sales_invoice_efris_prices(doc, method=None):
             continue
 
         item.custom_efris_unit_price = price_lookup[product_code]["unit_price"]
-
-
-def get_item_efris_unit_price(item):
-    efris_price = getattr(item, "custom_efris_unit_price", None)
-    if efris_price not in (None, ""):
-        return efris_price
-
-    product_code = get_item_efris_data(item)["product_code"]
-    if not product_code:
-        raise EFRISIntegrationError(
-            f"Missing EFRIS Product Code for invoice item row {getattr(item, 'idx', '')}"
-        )
-
-    raise EFRISIntegrationError(
-        f"Missing EFRIS Unit Price for product code {product_code} on invoice item row {getattr(item, 'idx', '')}"
-    )
 
 
 def get_item_efris_price_data(item, price_lookup):
@@ -342,7 +331,7 @@ def build_goods_detail(item, order_number, price_lookup):
 
     qty = to_decimal(item.qty)
     unit_price = truncate_two_decimals(price_data.get("unit_price"))
-    _tax_category_code, tax_rate_string = get_tax_category_details(price_data.get("tax_rate"))
+    _, tax_rate_string = get_tax_category_details(price_data.get("tax_rate"))
     total = truncate_two_decimals(qty * unit_price)
     tax = calculate_line_tax(total, price_data.get("tax_rate"))
 
@@ -479,10 +468,6 @@ def build_buyer_extend():
     }
 
 
-def build_tax_details(invoice_totals):
-    return invoice_totals["tax_details"]
-
-
 def build_summary(invoice_totals, item_count):
     return {
         "netAmount": float(invoice_totals["net_amount"]),
@@ -492,68 +477,6 @@ def build_summary(invoice_totals, item_count):
         "modeCode": "0",
         "remarks": "We appreciate your continued support",
         "qrCode": "",
-    }
-
-
-def build_extend():
-    return {
-        "reason": "",
-        "reasonCode": ""
-    }
-
-
-def build_import_services_seller():
-    return {
-        "importBusinessName": "",
-        "importEmailAddress": "",
-        "importContactNumber": "",
-        "importAddress": "",
-        "importInvoiceDate": "",
-        "importAttachmentName": "",
-        "importAttachmentContent": "",
-    }
-
-
-def build_airline_goods_details():
-    return [{
-        "item": "",
-        "itemCode": "",
-        "qty": "",
-        "unitOfMeasure": "",
-        "unitPrice": "",
-        "total": "",
-        "taxRate": "",
-        "tax": "",
-        "discountTotal": "",
-        "discountTaxRate": "",
-        "orderNumber": "",
-        "discountFlag": "",
-        "deemedFlag": "",
-        "exciseFlag": "",
-        "categoryId": "",
-        "categoryName": "",
-        "goodsCategoryId": "",
-        "goodsCategoryName": "",
-        "exciseRate": "",
-        "exciseRule": "",
-        "exciseTax": "",
-        "pack": "1",
-        "stick": "",
-        "exciseUnit": "",
-        "exciseCurrency": "",
-        "exciseRateName": "",
-    }]
-
-
-def build_edc_details():
-    return {
-        "tankNo": "",
-        "pumpNo": "",
-        "nozzleNo": "",
-        "controllerNo": "",
-        "acquisitionEquipmentNo": "",
-        "levelGaugeNo": "",
-        "mvrn": "",
     }
 
 
@@ -569,12 +492,58 @@ def build_invoice_data(efris_settings, doc, datetime_combined):
         "buyerDetails": build_buyer_details(doc),
         "buyerExtend": build_buyer_extend(),
         "goodsDetails": goods_details,
-        "taxDetails": build_tax_details(invoice_totals),
+        "taxDetails": invoice_totals["tax_details"],
         "summary": build_summary(invoice_totals, item_count),
-        "extend": build_extend(),
-        "importServicesSeller": build_import_services_seller(),
-        "airlineGoodsDetails": build_airline_goods_details(),
-        "edcDetails": build_edc_details(),
+        "extend": {
+            "reason": "",
+            "reasonCode": ""
+        },
+        "importServicesSeller": {
+            "importBusinessName": "",
+            "importEmailAddress": "",
+            "importContactNumber": "",
+            "importAddress": "",
+            "importInvoiceDate": "",
+            "importAttachmentName": "",
+            "importAttachmentContent": "",
+        },
+        "airlineGoodsDetails": [{
+            "item": "",
+            "itemCode": "",
+            "qty": "",
+            "unitOfMeasure": "",
+            "unitPrice": "",
+            "total": "",
+            "taxRate": "",
+            "tax": "",
+            "discountTotal": "",
+            "discountTaxRate": "",
+            "orderNumber": "",
+            "discountFlag": "",
+            "deemedFlag": "",
+            "exciseFlag": "",
+            "categoryId": "",
+            "categoryName": "",
+            "goodsCategoryId": "",
+            "goodsCategoryName": "",
+            "exciseRate": "",
+            "exciseRule": "",
+            "exciseTax": "",
+            "pack": "1",
+            "stick": "",
+            "exciseUnit": "",
+            "exciseCurrency": "",
+            "exciseRateName": "",
+        }],
+        "edcDetails": {
+            "tankNo": "",
+            "pumpNo": "",
+            "nozzleNo": "",
+            "controllerNo": "",
+            "acquisitionEquipmentNo": "",
+            "levelGaugeNo": "",
+            "mvrn": "",
+        },
     }
     
     return invoice_data, invoice_totals, item_count
@@ -623,16 +592,80 @@ def build_global_info(efris_settings, doc, invoice_totals, goods_details):
 
 
 def encrypt_invoice_data(invoice_data):
-    frappe.log_error(
-        title="EFRIS Invoice Data Before Encryption",
-        message=json.dumps(invoice_data, indent=2)
-    )
-    
     encrypted_result = encrypt_dynamic_json(invoice_data)
     if not encrypted_result.get("success"):
         raise EFRISIntegrationError(f"Encryption failed: {encrypted_result.get('error')}")
     
     return encrypted_result
+
+
+def decrypt_efris_response_content(encrypted_content, aes_key_hex):
+    if not encrypted_content:
+        return {}
+
+    aes_key_bytes = bytes.fromhex(aes_key_hex)
+    compressed_bytes = base64.b64decode(encrypted_content)
+
+    try:
+        encrypted_bytes = gzip.decompress(compressed_bytes)
+    except Exception:
+        encrypted_bytes = compressed_bytes
+
+    remainder = len(encrypted_bytes) % AES.block_size
+    if remainder:
+        encrypted_bytes = encrypted_bytes[:-remainder]
+
+    cipher = AES.new(aes_key_bytes, AES.MODE_ECB)
+    decrypted_padded = cipher.decrypt(encrypted_bytes)
+
+    try:
+        decrypted_bytes = unpad(decrypted_padded, AES.block_size)
+    except ValueError:
+        decrypted_bytes = decrypted_padded
+
+    try:
+        decoded_text = decrypted_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        decoded_text = decrypted_bytes.decode("latin-1")
+
+    return json.loads(decoded_text)
+
+
+def update_sales_invoice_efris_fields(doc, decrypted_response):
+    basic_information = decrypted_response.get("basicInformation") or {}
+    summary = decrypted_response.get("summary") or {}
+
+    field_map = {
+        "custom_qr_code": summary.get("qrCode"),
+        "custom_fdn": basic_information.get("invoiceId"),
+        "custom_invoice_number": basic_information.get("invoiceNo"),
+        "custom_verification_code": basic_information.get("antifakeCode"),
+    }
+
+    device_number = basic_information.get("deviceNo")
+    if device_number:
+        field_map["custom_device_number"] = device_number
+
+    field_map["custom_efris_synced"] = 1
+
+    for fieldname, value in field_map.items():
+        if value in (None, ""):
+            continue
+        if fieldname == "custom_efris_synced":
+            doc.db_set(fieldname, value, update_modified=False)
+        else:
+            doc.db_set(fieldname, str(value), update_modified=False)
+
+    frappe.db.commit()
+
+
+def sync_efris_response_to_sales_invoice(doc, response_data, aes_key=""):
+    encrypted_content = response_data.get("data", {}).get("content")
+    if not encrypted_content or not aes_key:
+        return
+
+    decrypted_response = decrypt_efris_response_content(encrypted_content, aes_key)
+    update_sales_invoice_efris_fields(doc, decrypted_response)
 
 
 def build_post_data(encrypted_result, global_info):
@@ -654,7 +687,7 @@ def build_post_data(encrypted_result, global_info):
     }
 
 
-def submit_to_efris(efris_settings, data_to_post):
+def submit_to_efris(efris_settings, data_to_post, aes_key=""):
     headers = {"Content-Type": "application/json"}
     server_url = efris_settings.server_url
 
@@ -665,24 +698,33 @@ def submit_to_efris(efris_settings, data_to_post):
 
     except requests.exceptions.Timeout:
         error_msg = "Request timed out. Please try again."
-        log_integration_request('Failed', server_url, headers, data_to_post, {}, error_msg)
+        log_integration_request('Failed', server_url, headers, data_to_post, {}, error_msg, aes_key=aes_key)
         raise EFRISIntegrationError(error_msg)
 
     except requests.exceptions.RequestException as e:
         error_msg = f"API request failed: {str(e)}"
-        log_integration_request('Failed', server_url, headers, data_to_post, {}, error_msg)
+        log_integration_request('Failed', server_url, headers, data_to_post, {}, error_msg, aes_key=aes_key)
         raise EFRISIntegrationError(error_msg)
 
 
-def handle_efris_response(doc, response_data, headers, server_url, data_to_post):
+def handle_efris_response(doc, response_data, headers, server_url, data_to_post, aes_key=""):
     return_message = response_data.get("returnStateInfo", {}).get("returnMessage", "")
 
     if return_message == "SUCCESS":
         frappe.msgprint("Sales Invoice successfully submitted to EFRIS URA via T109.")
-        log_integration_request('Completed', server_url, headers, data_to_post, response_data)
-        doc.save()
+        log_integration_request('Completed', server_url, headers, data_to_post, response_data, aes_key=aes_key)
+        try:
+            sync_efris_response_to_sales_invoice(doc, response_data, aes_key=aes_key)
+        except Exception:
+            frappe.logger().error(
+                "EFRIS Sales Invoice Response Sync Error\n%s",
+                frappe.get_traceback(),
+            )
+            frappe.msgprint(
+                "Invoice was sent to EFRIS, but the returned EFRIS fields could not be updated automatically."
+            )
     else:
-        log_integration_request('Failed', server_url, headers, data_to_post, response_data, return_message)
+        log_integration_request('Failed', server_url, headers, data_to_post, response_data, return_message, aes_key=aes_key)
         frappe.throw(
             title="EFRIS T109 Submission Failed",
             msg=return_message
@@ -691,21 +733,43 @@ def handle_efris_response(doc, response_data, headers, server_url, data_to_post)
 
 @frappe.whitelist()
 def on_send(invoice_name=None, doc=None, event=None):
+    if invoice_name:
+        target_invoice_name = invoice_name
+    elif isinstance(doc, str):
+        target_invoice_name = doc
+    elif doc:
+        target_invoice_name = doc.name
+    else:
+        frappe.throw("Sales Invoice is required")
+
+    frappe.enqueue(
+        "efris.efris.custom_scripts.upload_invoice.send_invoice_to_efris_job",
+        queue="long",
+        timeout=600,
+        enqueue_after_commit=True,
+        job_name=f"EFRIS Send Invoice {target_invoice_name}",
+        invoice_name=target_invoice_name,
+    )
+
+    return {
+        "success": True,
+        "queued": True,
+        "message": f"Invoice {target_invoice_name} queued for EFRIS submission.",
+    }
+
+
+def send_invoice_to_efris_job(invoice_name):
     try:
-        if invoice_name:
-            doc = frappe.get_doc("Sales Invoice", invoice_name)
-        elif isinstance(doc, str):
-            doc = frappe.get_doc("Sales Invoice", doc)
-
-        if not doc:
-            frappe.throw("Sales Invoice is required")
-
+        doc = frappe.get_doc("Sales Invoice", invoice_name)
         sync_sales_invoice_efris_prices(doc)
         process_invoice_t109(doc)
-        return {"success": True}
-
-    except Exception as e:
-        frappe.throw(str(e))
+    except Exception:
+        frappe.logger().error(
+            "EFRIS Send Invoice Job Error - %s\n%s",
+            invoice_name,
+            frappe.get_traceback(),
+        )
+        raise
 
 
 def process_invoice_t109(doc):
@@ -720,5 +784,6 @@ def process_invoice_t109(doc):
         invoice_data["goodsDetails"]
     )
     data_to_post = build_post_data(encrypted_result, global_info)
-    response_data, headers, server_url = submit_to_efris(efris_settings, data_to_post)
-    handle_efris_response(doc, response_data, headers, server_url, data_to_post)
+    aes_key_used = encrypted_result.get("aes_key", "")
+    response_data, headers, server_url = submit_to_efris(efris_settings, data_to_post, aes_key=aes_key_used)
+    handle_efris_response(doc, response_data, headers, server_url, data_to_post, aes_key=aes_key_used)
