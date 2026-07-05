@@ -152,6 +152,9 @@ doc_events = {
 
 scheduler_events = {
 	"cron": {
+		"0 1 * * *": [
+			"efris.efris.background_tasks.efris_key_manager.refresh_daily_efris_aes_key"
+		],
 		"0 0 * * *": [
 			"efris.efris.background_tasks.efris_price_sync.sync_daily_efris_prices"
 		]

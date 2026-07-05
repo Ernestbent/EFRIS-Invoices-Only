@@ -17,6 +17,12 @@ STANDARD_TAX_RATE = 0.18
 ZERO_TAX_RATE = 0.0
 STANDARD_TAX_CODE = "01"
 ZERO_TAX_CODE = "02"
+SALES_INVOICE_UOM_MAPPING = {
+    "pieces": "PP",
+    "piece": "PP",
+    "litre": "102",
+    "liter": "102",
+}
 BUYER_TYPE_MAPPING = {
     "B2B": "0",
     "B2C": "1",
@@ -24,6 +30,10 @@ BUYER_TYPE_MAPPING = {
     "B2G": "3"
 }
 DEFAULT_BUYER_TYPE = "1"
+EFRIS_SEND_INVOICE_ALLOWED_USERS = {
+    "ernestben69@gmail.com",
+    "reports@autozonepro.org",
+}
 ROW_FIELD_CANDIDATES = {
     "product_code": [
         "custom_efris_product_code",
@@ -33,11 +43,6 @@ ROW_FIELD_CANDIDATES = {
         "custom_efris_item_name",
         "custom_goods_service_name",
     ],
-    "uom_code": [
-        "custom_uom_codeefris",
-        "custom_uom_code_efris",
-        "custom_uom_code",
-    ],
     "goods_category_id": [
         "custom_goods_category_id",
     ],
@@ -45,7 +50,6 @@ ROW_FIELD_CANDIDATES = {
 ITEM_MASTER_FIELD_MAP = {
     "product_code": "custom_efris_product_code",
     "goods_service_name": "custom_goods_service_name",
-    "uom_code": "custom_uom_code_efris",
     "goods_category_id": "custom_goods_category_id",
 }
 
@@ -60,7 +64,12 @@ STANDARD_TAX_RATE_DECIMAL = Decimal("0.18")
 ZERO_TAX_RATE_DECIMAL = Decimal("0.00")
 
 
-def log_integration_request(status, url, headers, data, response, error="", aes_key=""):
+def validate_send_invoice_user():
+    if frappe.session.user not in EFRIS_SEND_INVOICE_ALLOWED_USERS:
+        frappe.throw("You are not allowed to send invoices to EFRIS.")
+
+
+def log_integration_request(status, url, headers, data, response, error="", aes_key="", reference_docname=""):
     valid_statuses = ["", "Queued", "Authorized", "Completed", "Cancelled", "Failed"]
     status = status if status in valid_statuses else "Failed"
 
@@ -77,6 +86,8 @@ def log_integration_request(status, url, headers, data, response, error="", aes_
         "data": json.dumps(data, indent=4),
         "output": json.dumps(response, indent=4),
         "error": error,
+        "reference_doctype": "Sales Invoice" if reference_docname else "",
+        "reference_docname": reference_docname or "",
         "execution_time": datetime.now(EAT_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
     })
     integration_request.insert(ignore_permissions=True)
@@ -128,38 +139,11 @@ def get_item_efris_data(item_row):
             or getattr(item_row, "item_name", None)
             or ""
         ).strip(),
-        "uom_code": str(
-            get_first_available_value(item_row, ROW_FIELD_CANDIDATES["uom_code"])
-            or item_master_values.get(ITEM_MASTER_FIELD_MAP["uom_code"])
-            or ""
-        ).strip(),
         "goods_category_id": str(
             get_first_available_value(item_row, ROW_FIELD_CANDIDATES["goods_category_id"])
             or item_master_values.get(ITEM_MASTER_FIELD_MAP["goods_category_id"])
             or ""
         ).strip(),
-    }
-
-
-def get_efris_price_lookup(product_codes):
-    product_codes = [code.strip() for code in product_codes if code and code.strip()]
-    if not product_codes:
-        return {}
-
-    price_rows = frappe.get_all(
-        "EFRIS Prices",
-        filters={"product_code": ["in", product_codes]},
-        fields=["product_code", "unit_price", "tax_rate"],
-        limit_page_length=0,
-    )
-
-    return {
-        row.product_code: {
-            "unit_price": row.unit_price,
-            "tax_rate": row.tax_rate,
-        }
-        for row in price_rows
-        if row.product_code
     }
 
 
@@ -170,41 +154,56 @@ def sync_sales_invoice_efris_prices(doc, method=None):
     if not getattr(doc, "items", None):
         return
 
-    product_codes = [get_item_efris_data(item)["product_code"] for item in doc.items]
-    price_lookup = get_efris_price_lookup(product_codes)
-
     for item in doc.items:
-        product_code = get_item_efris_data(item)["product_code"]
-        if not product_code or product_code not in price_lookup:
+        item_code = getattr(item, "item_code", None)
+        if not item_code:
             continue
 
-        item.custom_efris_unit_price = price_lookup[product_code]["unit_price"]
+        item.custom_efris_unit_price = frappe.get_cached_value("Item", item_code, "custom_efris_price") or ""
 
 
-def get_item_efris_price_data(item, price_lookup):
-    product_code = get_item_efris_data(item)["product_code"]
-    if not product_code:
+def get_sales_invoice_item_unit_price(item):
+    unit_price = getattr(item, "custom_efris_unit_price", None)
+    if unit_price in (None, ""):
         raise EFRISIntegrationError(
-            f"Missing EFRIS Product Code for invoice item row {getattr(item, 'idx', '')}"
+            f"Missing Item price on invoice item row {getattr(item, 'idx', '')} item {getattr(item, 'item_code', '')}"
         )
 
-    price_data = price_lookup.get(product_code)
-    if not price_data:
+    return truncate_two_decimals(unit_price)
+
+
+def get_sales_invoice_item_vat_rate(item):
+    vat_value = getattr(item, "custom_vat", None)
+    if vat_value in (None, ""):
         raise EFRISIntegrationError(
-            f"Missing EFRIS Prices record for product code {product_code} on invoice item row {getattr(item, 'idx', '')}"
+            f"Missing VAT on invoice item row {getattr(item, 'idx', '')} item {getattr(item, 'item_code', '')}"
         )
 
-    if price_data.get("unit_price") in (None, ""):
+    vat_string = str(vat_value).strip().replace("%", "")
+    try:
+        vat_rate = Decimal(vat_string)
+    except Exception as exc:
         raise EFRISIntegrationError(
-            f"Missing EFRIS unit price in EFRIS Prices for product code {product_code}"
+            f"Invalid VAT '{vat_value}' on invoice item row {getattr(item, 'idx', '')} item {getattr(item, 'item_code', '')}"
+        ) from exc
+
+    if vat_rate > 1:
+        vat_rate = vat_rate / Decimal("100")
+
+    return truncate_two_decimals(vat_rate)
+
+
+def get_sales_invoice_item_uom_code(item):
+    item_uom = str(getattr(item, "uom", "") or "").strip()
+    mapped_uom = SALES_INVOICE_UOM_MAPPING.get(item_uom.lower())
+
+    if not mapped_uom:
+        raise EFRISIntegrationError(
+            f"Unsupported Sales Invoice Item UOM '{item_uom}' on row {getattr(item, 'idx', '')}. "
+            "Add it to SALES_INVOICE_UOM_MAPPING in upload_invoice.py."
         )
 
-    if price_data.get("tax_rate") in (None, ""):
-        raise EFRISIntegrationError(
-            f"Missing EFRIS tax rate in EFRIS Prices for product code {product_code}"
-        )
-
-    return price_data
+    return mapped_uom
 
 
 def to_decimal(value):
@@ -228,7 +227,7 @@ def normalize_tax_rate(value):
 
 def get_tax_category_details(tax_rate):
     if tax_rate in (None, ""):
-        raise EFRISIntegrationError("Missing EFRIS tax rate. Please sync EFRIS Prices first.")
+        raise EFRISIntegrationError("Missing VAT rate on Sales Invoice Item.")
 
     normalized_tax_rate = normalize_tax_rate(tax_rate)
 
@@ -315,31 +314,27 @@ def calculate_invoice_totals(goods_details):
     }
 
 
-def build_goods_detail(item, order_number, price_lookup):
+def build_goods_detail(item, order_number):
     efris_item_data = get_item_efris_data(item)
-    price_data = get_item_efris_price_data(item, price_lookup)
 
     if not efris_item_data["product_code"]:
         raise EFRISIntegrationError(
             f"Missing EFRIS Product Code for invoice item row {getattr(item, 'idx', '')} item {getattr(item, 'item_code', '')}"
         )
 
-    if not efris_item_data["uom_code"]:
-        raise EFRISIntegrationError(
-            f"Missing EFRIS UOM Code for invoice item row {getattr(item, 'idx', '')} item {getattr(item, 'item_code', '')}"
-        )
-
     qty = to_decimal(item.qty)
-    unit_price = truncate_two_decimals(price_data.get("unit_price"))
-    _, tax_rate_string = get_tax_category_details(price_data.get("tax_rate"))
+    unit_price = get_sales_invoice_item_unit_price(item)
+    tax_rate = get_sales_invoice_item_vat_rate(item)
+    unit_of_measure = get_sales_invoice_item_uom_code(item)
+    _, tax_rate_string = get_tax_category_details(tax_rate)
     total = truncate_two_decimals(qty * unit_price)
-    tax = calculate_line_tax(total, price_data.get("tax_rate"))
+    tax = calculate_line_tax(total, tax_rate)
 
     return {
         "item": efris_item_data["goods_service_name"],
         "itemCode": efris_item_data["product_code"],
         "qty": float(qty),
-        "unitOfMeasure": "PP",
+        "unitOfMeasure": unit_of_measure,
         "unitPrice": float(unit_price),
         "total": float(total),
         "taxRate": tax_rate_string,
@@ -380,12 +375,10 @@ def build_goods_detail(item, order_number, price_lookup):
 def process_invoice_items(items):
     goods_details = []
     item_count = 0
-    product_codes = [get_item_efris_data(item)["product_code"] for item in items]
-    price_lookup = get_efris_price_lookup(product_codes)
 
     for item in items:
         item_count += 1
-        goods_detail = build_goods_detail(item, len(goods_details), price_lookup)
+        goods_detail = build_goods_detail(item, len(goods_details))
         goods_details.append(goods_detail)
 
     invoice_totals = calculate_invoice_totals(goods_details)
@@ -687,7 +680,7 @@ def build_post_data(encrypted_result, global_info):
     }
 
 
-def submit_to_efris(efris_settings, data_to_post, aes_key=""):
+def submit_to_efris(efris_settings, data_to_post, aes_key="", reference_docname=""):
     headers = {"Content-Type": "application/json"}
     server_url = efris_settings.server_url
 
@@ -698,12 +691,30 @@ def submit_to_efris(efris_settings, data_to_post, aes_key=""):
 
     except requests.exceptions.Timeout:
         error_msg = "Request timed out. Please try again."
-        log_integration_request('Failed', server_url, headers, data_to_post, {}, error_msg, aes_key=aes_key)
+        log_integration_request(
+            'Failed',
+            server_url,
+            headers,
+            data_to_post,
+            {},
+            error_msg,
+            aes_key=aes_key,
+            reference_docname=reference_docname,
+        )
         raise EFRISIntegrationError(error_msg)
 
     except requests.exceptions.RequestException as e:
         error_msg = f"API request failed: {str(e)}"
-        log_integration_request('Failed', server_url, headers, data_to_post, {}, error_msg, aes_key=aes_key)
+        log_integration_request(
+            'Failed',
+            server_url,
+            headers,
+            data_to_post,
+            {},
+            error_msg,
+            aes_key=aes_key,
+            reference_docname=reference_docname,
+        )
         raise EFRISIntegrationError(error_msg)
 
 
@@ -712,7 +723,15 @@ def handle_efris_response(doc, response_data, headers, server_url, data_to_post,
 
     if return_message == "SUCCESS":
         frappe.msgprint("Sales Invoice successfully submitted to EFRIS URA via T109.")
-        log_integration_request('Completed', server_url, headers, data_to_post, response_data, aes_key=aes_key)
+        log_integration_request(
+            'Completed',
+            server_url,
+            headers,
+            data_to_post,
+            response_data,
+            aes_key=aes_key,
+            reference_docname=doc.name,
+        )
         try:
             sync_efris_response_to_sales_invoice(doc, response_data, aes_key=aes_key)
         except Exception:
@@ -724,7 +743,16 @@ def handle_efris_response(doc, response_data, headers, server_url, data_to_post,
                 "Invoice was sent to EFRIS, but the returned EFRIS fields could not be updated automatically."
             )
     else:
-        log_integration_request('Failed', server_url, headers, data_to_post, response_data, return_message, aes_key=aes_key)
+        log_integration_request(
+            'Failed',
+            server_url,
+            headers,
+            data_to_post,
+            response_data,
+            return_message,
+            aes_key=aes_key,
+            reference_docname=doc.name,
+        )
         frappe.throw(
             title="EFRIS T109 Submission Failed",
             msg=return_message
@@ -733,6 +761,8 @@ def handle_efris_response(doc, response_data, headers, server_url, data_to_post,
 
 @frappe.whitelist()
 def on_send(invoice_name=None, doc=None, event=None):
+    validate_send_invoice_user()
+
     if invoice_name:
         target_invoice_name = invoice_name
     elif isinstance(doc, str):
@@ -785,5 +815,10 @@ def process_invoice_t109(doc):
     )
     data_to_post = build_post_data(encrypted_result, global_info)
     aes_key_used = encrypted_result.get("aes_key", "")
-    response_data, headers, server_url = submit_to_efris(efris_settings, data_to_post, aes_key=aes_key_used)
+    response_data, headers, server_url = submit_to_efris(
+        efris_settings,
+        data_to_post,
+        aes_key=aes_key_used,
+        reference_docname=doc.name,
+    )
     handle_efris_response(doc, response_data, headers, server_url, data_to_post, aes_key=aes_key_used)

@@ -17,24 +17,10 @@ from efris.efris.background_tasks.efris_key_manager import (
 CACHE_KEY_AES = "efris_cached_aes_key"
 
 def get_cached_aes_key_hex():
-    """Retrieve AES key hex from cache, then settings, then regenerate."""
+    """Retrieve AES key hex from cache, otherwise regenerate a fresh one."""
     aes_key_hex = frappe.cache().get_value(CACHE_KEY_AES)
     if aes_key_hex:
         return aes_key_hex
-
-    settings = frappe.get_doc("EFRIS Settings", "EFRIS Settings")
-    saved_aes_key = (getattr(settings, "aes_key", None) or "").strip()
-    if saved_aes_key:
-        try:
-            binascii.unhexlify(saved_aes_key)
-        except Exception:
-            frappe.log_error(
-                title="EFRIS AES Key Validation Error",
-                message=f"Saved AES key in EFRIS Settings is not valid hex: {saved_aes_key}",
-            )
-        else:
-            frappe.cache().set_value(CACHE_KEY_AES, saved_aes_key, expires_in_sec=86400)
-            return saved_aes_key
 
     result = test_efris_complete_flow()
     if result.get("success"):

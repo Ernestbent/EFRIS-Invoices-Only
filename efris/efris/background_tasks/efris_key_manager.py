@@ -11,7 +11,6 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes
 import binascii
 
-API_BASE_URL = "https://efristest.ura.go.ug/efrisws/ws/taapp/getInformation"
 CACHE_KEY_AES = "efris_cached_aes_key"
 
 def resolve_file_path(file_url):
@@ -184,7 +183,7 @@ def decrypt_passwordDes(passwordDes_b64, private_key):
     
     raise Exception("All decryption methods failed. Check if correct private key is uploaded to EFRIS portal.")
 
-def make_t104_request(device_number, tin):
+def make_t104_request(server_url, device_number, tin, brn=""):
     """
     Make T104 API call to get new AES key
     Per EFRIS spec: AES key valid for 24 hours
@@ -211,7 +210,7 @@ def make_t104_request(device_number, tin):
             "deviceMAC": "B47720524158",
             "deviceNo": device_number,
             "tin": tin,
-            "brn": "",
+            "brn": (brn or "").strip().lstrip("/"),
             "taxpayerID": "1",
             "longitude": "32.61665",
             "latitude": "0.36601",
@@ -230,7 +229,7 @@ def make_t104_request(device_number, tin):
     }
     
     response = requests.post(
-        API_BASE_URL,
+        server_url,
         json=payload,
         headers={"Content-Type": "application/json"},
         timeout=30
@@ -255,45 +254,66 @@ def make_t104_request(device_number, tin):
     decoded_content = json.loads(base64.b64decode(content).decode('utf-8'))
     return decoded_content
 
+def refresh_efris_aes_key():
+    settings = frappe.get_single("EFRIS Settings")
+
+    if not getattr(settings, "active", 0):
+        return {"success": False, "error": "EFRIS Settings is disabled"}
+
+    required_fields = {
+        "server_url": "Server URL",
+        "device_number": "Device Number",
+        "tin": "TIN",
+        "private_key": "Private Key",
+    }
+
+    for fieldname, label in required_fields.items():
+        if not getattr(settings, fieldname, None):
+            return {"success": False, "error": f"{label} is required in EFRIS Settings"}
+
+    file_path = resolve_file_path(settings.private_key)
+    private_key = get_private_key(file_path, get_pfx_password(settings))
+
+    t104_response = make_t104_request(
+        settings.server_url,
+        settings.device_number,
+        settings.tin,
+        settings.brn,
+    )
+
+    password_des = t104_response.get("passowrdDes")
+    if not password_des:
+        return {"success": False, "error": "Missing passowrdDes in T104 response"}
+
+    aes_key_hex = decrypt_passwordDes(password_des, private_key)
+    cache().set_value(CACHE_KEY_AES, aes_key_hex, expires_in_sec=86400)
+    settings.db_set("aes_key", aes_key_hex, update_modified=False)
+    frappe.db.commit()
+
+    return {
+        "success": True,
+        "aes_key": aes_key_hex,
+        "aes_key_length": len(aes_key_hex) // 2,
+        "cached": True,
+    }
+
+
 @frappe.whitelist()
 def test_efris_complete_flow():
     try:
-        # Get EFRIS Settings
-        company = frappe.defaults.get_user_default("company")
-        if not company:
-            return {"success": False, "error": "No default company"}
-        
-        settings = frappe.get_doc("EFRIS Settings", {"company": company})
-        
-        # Load private key
-        file_path = resolve_file_path(settings.private_key)
-        private_key = get_private_key(file_path, get_pfx_password(settings))
-        
-        # Make T104 request
-        t104_response = make_t104_request(settings.device_number, settings.tin)
-        
-        # Get passwordDes (note the typo in EFRIS API: "passowrdDes")
-        password_des = t104_response.get("passowrdDes")
-        if not password_des:
-            return {"success": False, "error": "Missing passowrdDes in T104 response"}
-        
-        # Decrypt to get AES key
-        aes_key_hex = decrypt_passwordDes(password_des, private_key)
-        
-        # Cache for 24 hours
-        cache().set_value(CACHE_KEY_AES, aes_key_hex, expires_in_sec=86400)
-        # Save AES key in the EFRIS Settings doctype
-        settings.aes_key = aes_key_hex
-        settings.save(ignore_permissions=True)
-        
-        return {
-            "success": True,
-            "aes_key": aes_key_hex,
-            "aes_key_length": len(aes_key_hex) // 2,
-            "cached": True
-        }
-        
+        return refresh_efris_aes_key()
     except Exception as e:
-        error_msg = str(e)[:200]  # Truncate for logging
+        error_msg = str(e)[:200]
         frappe.log_error(error_msg, "EFRIS Key Manager")
         return {"success": False, "error": str(e)}
+
+
+def refresh_daily_efris_aes_key():
+    try:
+        result = refresh_efris_aes_key()
+        if not result.get("success"):
+            frappe.log_error(result.get("error"), "EFRIS Daily AES Key Refresh")
+        return result
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "EFRIS Daily AES Key Refresh")
+        return {"success": False, "error": "AES key refresh failed"}

@@ -1,6 +1,15 @@
+const EFRIS_SEND_INVOICE_ALLOWED_USERS = [
+    'ernestben69@gmail.com',
+    'reports@autozonepro.org'
+];
+
 frappe.ui.form.on('Sales Invoice', {
     refresh: function(frm) {
         if (frm.doc.custom_efris_synced) {
+            return;
+        }
+
+        if (!EFRIS_SEND_INVOICE_ALLOWED_USERS.includes(frappe.session.user)) {
             return;
         }
 
