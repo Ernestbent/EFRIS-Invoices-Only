@@ -64,6 +64,10 @@ STANDARD_TAX_RATE_DECIMAL = Decimal("0.18")
 ZERO_TAX_RATE_DECIMAL = Decimal("0.00")
 
 
+def get_efris_request_time():
+    return datetime.now(EAT_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def validate_send_invoice_user():
     if frappe.session.user not in EFRIS_SEND_INVOICE_ALLOWED_USERS:
         frappe.throw("You are not allowed to send invoices to EFRIS.")
@@ -553,7 +557,7 @@ def build_invoice_data(efris_settings, doc, datetime_combined):
 
 def build_global_info(efris_settings, doc, invoice_totals, goods_details):
     data_exchange_id = uuid.uuid4().hex[:32]
-    current_time = datetime.now(EAT_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    current_time = get_efris_request_time()
     reference_no = get_invoice_reference_no(doc)
 
     owner_full_name = frappe.db.get_value(

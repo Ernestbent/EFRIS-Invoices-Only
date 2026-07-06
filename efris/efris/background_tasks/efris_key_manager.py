@@ -2,7 +2,7 @@ import base64
 import json
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import frappe
 from frappe import cache
 from cryptography.hazmat.primitives.serialization import pkcs12
@@ -12,6 +12,11 @@ from cryptography.hazmat.primitives import hashes
 import binascii
 
 CACHE_KEY_AES = "efris_cached_aes_key"
+EAT_TIMEZONE = timezone(timedelta(hours=3))
+
+
+def get_efris_request_time():
+    return datetime.now(EAT_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 def resolve_file_path(file_url):
     """Resolve file path from Frappe file URL"""
@@ -204,7 +209,7 @@ def make_t104_request(server_url, device_number, tin, brn=""):
             "dataExchangeId": "9230489223014123",
             "interfaceCode": "T104",
             "requestCode": "TP",
-            "requestTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "requestTime": get_efris_request_time(),
             "responseCode": "TA",
             "userName": "admin",
             "deviceMAC": "B47720524158",
