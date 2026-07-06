@@ -82,6 +82,10 @@ def get_invoice_reference_no(doc):
     return doc.name
 
 
+def get_buyer_name_value(customer_name):
+    return (customer_name or "").strip().split(" ")[0] if customer_name else ""
+
+
 def log_integration_request(status, url, headers, data, response, error="", aes_key="", reference_docname=""):
     valid_statuses = ["", "Queued", "Authorized", "Completed", "Cancelled", "Failed"]
     status = status if status in valid_statuses else "Failed"
@@ -277,6 +281,7 @@ def calculate_line_tax(total_amount, tax_rate):
 def calculate_invoice_totals(goods_details):
     gross_amount = Decimal("0.00")
     tax_amount = Decimal("0.000")
+    used_tax_categories = set()
     tax_buckets = {
         STANDARD_TAX_CODE: {
             "taxCategoryCode": STANDARD_TAX_CODE,
@@ -304,6 +309,7 @@ def calculate_invoice_totals(goods_details):
         tax_amount += line_tax_amount
 
         bucket = tax_buckets[tax_category_code]
+        used_tax_categories.add(tax_category_code)
         bucket["taxRate"] = tax_rate_string
         bucket["grossAmount"] += line_gross_amount
         bucket["taxAmount"] += line_tax_amount
@@ -315,6 +321,9 @@ def calculate_invoice_totals(goods_details):
 
     formatted_tax_details = []
     for tax_category_code in [STANDARD_TAX_CODE, ZERO_TAX_CODE]:
+        if tax_category_code not in used_tax_categories:
+            continue
+
         bucket = tax_buckets[tax_category_code]
         formatted_tax_details.append({
             "taxCategoryCode": bucket["taxCategoryCode"],
@@ -448,13 +457,14 @@ def build_basic_information(efris_settings, doc, datetime_combined):
 
 def build_buyer_details(doc):
     buyer_type = BUYER_TYPE_MAPPING.get(doc.customer_group, DEFAULT_BUYER_TYPE)
+    buyer_name = get_buyer_name_value(doc.customer_name)
 
     return {
         "buyerTin": doc.tax_id,
         "buyerNinBrn": "",
         "buyerPassportNum": "",
-        "buyerLegalName": doc.customer_name or "",
-        "buyerBusinessName": doc.customer_name or "",
+        "buyerLegalName": buyer_name,
+        "buyerBusinessName": buyer_name,
         "buyerAddress": doc.customer_address or "",
         "buyerEmail": doc.contact_email or "",
         "buyerMobilePhone": doc.contact_mobile or "",
