@@ -182,7 +182,15 @@ def get_sales_invoice_item_unit_price(item):
             f"Missing Item price on invoice item row {getattr(item, 'idx', '')} item {getattr(item, 'item_code', '')}"
         )
 
-    return truncate_two_decimals(unit_price)
+    if isinstance(unit_price, str):
+        unit_price = unit_price.strip().replace(",", "")
+
+    try:
+        return truncate_two_decimals(unit_price)
+    except Exception as exc:
+        raise EFRISIntegrationError(
+            f"Invalid Item price '{unit_price}' on invoice item row {getattr(item, 'idx', '')} item {getattr(item, 'item_code', '')}"
+        ) from exc
 
 
 def get_sales_invoice_item_vat_rate(item):
@@ -775,45 +783,71 @@ def handle_efris_response(doc, response_data, headers, server_url, data_to_post,
 
 @frappe.whitelist()
 def on_send(invoice_name=None, doc=None, event=None):
-    validate_send_invoice_user()
+    try:
+        validate_send_invoice_user()
 
-    if invoice_name:
-        target_invoice_name = invoice_name
-    elif isinstance(doc, str):
-        target_invoice_name = doc
-    elif doc:
-        target_invoice_name = doc.name
-    else:
-        frappe.throw("Sales Invoice is required")
+        if invoice_name:
+            target_invoice_name = invoice_name
+        elif isinstance(doc, str):
+            target_invoice_name = doc
+        elif doc:
+            target_invoice_name = doc.name
+        else:
+            frappe.throw("Sales Invoice is required")
 
-    doc = frappe.get_doc("Sales Invoice", target_invoice_name)
-    sync_sales_invoice_efris_prices(doc)
-    process_invoice_t109(doc)
+        doc = frappe.get_doc("Sales Invoice", target_invoice_name)
+        sync_sales_invoice_efris_prices(doc)
+        process_invoice_t109(doc)
 
-    return {
-        "success": True,
-        "queued": False,
-        "message": f"Invoice {target_invoice_name} submitted to EFRIS.",
-    }
+        return {
+            "success": True,
+            "queued": False,
+            "message": f"Invoice {target_invoice_name} submitted to EFRIS.",
+        }
+    except Exception:
+        target_name = invoice_name or doc if isinstance(doc, str) else getattr(doc, "name", "")
+        frappe.log_error(
+            frappe.get_traceback(),
+            f"EFRIS Send Invoice Error - {target_name or 'Unknown Invoice'}",
+        )
+        raise
 
 
 def process_invoice_t109(doc):
     efris_settings = get_efris_settings()
     datetime_combined = f"{doc.posting_date} {doc.posting_time}"
-    invoice_data, invoice_totals, item_count = build_invoice_data(efris_settings, doc, datetime_combined)
-    encrypted_result = encrypt_invoice_data(invoice_data)
-    global_info = build_global_info(
-        efris_settings,
-        doc,
-        invoice_totals,
-        invoice_data["goodsDetails"]
-    )
-    data_to_post = build_post_data(encrypted_result, global_info)
-    aes_key_used = encrypted_result.get("aes_key", "")
-    response_data, headers, server_url = submit_to_efris(
-        efris_settings,
-        data_to_post,
-        aes_key=aes_key_used,
-        reference_docname=doc.name,
-    )
-    handle_efris_response(doc, response_data, headers, server_url, data_to_post, aes_key=aes_key_used)
+    invoice_data = {}
+    data_to_post = {}
+    aes_key_used = ""
+
+    try:
+        invoice_data, invoice_totals, item_count = build_invoice_data(efris_settings, doc, datetime_combined)
+        encrypted_result = encrypt_invoice_data(invoice_data)
+        global_info = build_global_info(
+            efris_settings,
+            doc,
+            invoice_totals,
+            invoice_data["goodsDetails"]
+        )
+        data_to_post = build_post_data(encrypted_result, global_info)
+        aes_key_used = encrypted_result.get("aes_key", "")
+        response_data, headers, server_url = submit_to_efris(
+            efris_settings,
+            data_to_post,
+            aes_key=aes_key_used,
+            reference_docname=doc.name,
+        )
+        handle_efris_response(doc, response_data, headers, server_url, data_to_post, aes_key=aes_key_used)
+    except Exception as exc:
+        if not data_to_post:
+            log_integration_request(
+                "Failed",
+                getattr(efris_settings, "server_url", ""),
+                {},
+                invoice_data,
+                {},
+                str(exc),
+                aes_key=aes_key_used,
+                reference_docname=doc.name,
+            )
+        raise
