@@ -30,6 +30,7 @@ BUYER_TYPE_MAPPING = {
     "B2G": "3"
 }
 DEFAULT_BUYER_TYPE = "1"
+EFRIS_OPERATOR_NAME = "Hardev"
 EFRIS_SEND_INVOICE_ALLOWED_USERS = {
     "ernestben69@gmail.com",
     "reports@autozonepro.org",
@@ -84,6 +85,13 @@ def get_invoice_reference_no(doc):
 
 def get_buyer_name_value(customer_name):
     return (customer_name or "").strip().split(" ")[0] if customer_name else ""
+
+
+def get_first_non_empty(*values):
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return ""
 
 
 def log_integration_request(status, url, headers, data, response, error="", aes_key="", reference_docname=""):
@@ -433,18 +441,12 @@ def build_seller_details(efris_settings, doc):
 
 
 def build_basic_information(efris_settings, doc, datetime_combined):
-    owner_full_name = frappe.db.get_value(
-        "User",
-        doc.owner,
-        "full_name"
-    ) or doc.owner
-
     return {
         "invoiceNo": "",
         "antifakeCode": "",
         "deviceNo": efris_settings.device_number,
         "issuedDate": datetime_combined,
-        "operator": owner_full_name,
+        "operator": EFRIS_OPERATOR_NAME,
         "currency": "UGX",
         "oriInvoiceId": "",
         "invoiceType": "1",
@@ -578,12 +580,6 @@ def build_global_info(efris_settings, doc, invoice_totals, goods_details):
     current_time = get_efris_request_time()
     reference_no = get_invoice_reference_no(doc)
 
-    owner_full_name = frappe.db.get_value(
-        "User",
-        doc.owner,
-        "full_name"
-    ) or doc.owner
-
     item_description = ", ".join([item["item"] for item in goods_details[:3]])[:100]
 
     return {
@@ -607,7 +603,7 @@ def build_global_info(efris_settings, doc, invoice_totals, goods_details):
             "responseDateFormat": "dd/MM/yyyy",
             "responseTimeFormat": "dd/MM/yyyy HH:mm:ss",
             "referenceNo": reference_no,
-            "operatorName": owner_full_name,
+            "operatorName": EFRIS_OPERATOR_NAME,
             "itemDescription": item_description,
             "currency": "UGX",
             "grossAmount": str(invoice_totals["gross_amount"]),
@@ -661,10 +657,13 @@ def update_sales_invoice_efris_fields(doc, decrypted_response):
     summary = decrypted_response.get("summary") or {}
 
     field_map = {
-        "custom_qr_code": summary.get("qrCode"),
-        "custom_fdn": basic_information.get("invoiceId"),
+        "custom_qr_code": get_first_non_empty(summary.get("qrCode"), basic_information.get("qrCode")),
+        "custom_fdn": get_first_non_empty(basic_information.get("invoiceId"), decrypted_response.get("invoiceId")),
         "custom_invoice_number": basic_information.get("invoiceNo"),
-        "custom_verification_code": basic_information.get("antifakeCode"),
+        "custom_verification_code": get_first_non_empty(
+            basic_information.get("antifakeCode"),
+            decrypted_response.get("antifakeCode"),
+        ),
     }
 
     device_number = basic_information.get("deviceNo")
@@ -686,10 +685,13 @@ def update_sales_invoice_efris_fields(doc, decrypted_response):
 
 def sync_efris_response_to_sales_invoice(doc, response_data, aes_key=""):
     encrypted_content = response_data.get("data", {}).get("content")
-    if not encrypted_content or not aes_key:
+    settings_aes_key = (frappe.get_cached_value("EFRIS Settings", "EFRIS Settings", "aes_key") or "").strip()
+    decryption_key = settings_aes_key or aes_key
+
+    if not encrypted_content or not decryption_key:
         return
 
-    decrypted_response = decrypt_efris_response_content(encrypted_content, aes_key)
+    decrypted_response = decrypt_efris_response_content(encrypted_content, decryption_key)
     update_sales_invoice_efris_fields(doc, decrypted_response)
 
 
