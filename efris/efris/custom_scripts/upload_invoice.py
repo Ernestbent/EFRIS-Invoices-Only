@@ -69,6 +69,15 @@ def validate_send_invoice_user():
         frappe.throw("You are not allowed to send invoices to EFRIS.")
 
 
+def get_invoice_reference_no(doc):
+    for item in getattr(doc, "items", []) or []:
+        sales_order = getattr(item, "sales_order", None)
+        if sales_order:
+            return sales_order
+
+    return doc.name
+
+
 def log_integration_request(status, url, headers, data, response, error="", aes_key="", reference_docname=""):
     valid_statuses = ["", "Queued", "Authorized", "Completed", "Cancelled", "Failed"]
     status = status if status in valid_statuses else "Failed"
@@ -396,7 +405,7 @@ def build_seller_details(efris_settings, doc):
         "linePhone": efris_settings.line_phone,
         "emailAddress": efris_settings.email or "",
         "placeOfBusiness": efris_settings.place_of_business,
-        "referenceNo": doc.name,
+        "referenceNo": get_invoice_reference_no(doc),
         "branchId": "",
         "isCheckReferenceNo": "",
     }
@@ -545,6 +554,7 @@ def build_invoice_data(efris_settings, doc, datetime_combined):
 def build_global_info(efris_settings, doc, invoice_totals, goods_details):
     data_exchange_id = uuid.uuid4().hex[:32]
     current_time = datetime.now(EAT_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    reference_no = get_invoice_reference_no(doc)
 
     owner_full_name = frappe.db.get_value(
         "User",
@@ -574,7 +584,7 @@ def build_global_info(efris_settings, doc, invoice_totals, goods_details):
         "extendField": {
             "responseDateFormat": "dd/MM/yyyy",
             "responseTimeFormat": "dd/MM/yyyy HH:mm:ss",
-            "referenceNo": doc.name,
+            "referenceNo": reference_no,
             "operatorName": owner_full_name,
             "itemDescription": item_description,
             "currency": "UGX",
@@ -772,34 +782,15 @@ def on_send(invoice_name=None, doc=None, event=None):
     else:
         frappe.throw("Sales Invoice is required")
 
-    frappe.enqueue(
-        "efris.efris.custom_scripts.upload_invoice.send_invoice_to_efris_job",
-        queue="long",
-        timeout=600,
-        enqueue_after_commit=True,
-        job_name=f"EFRIS Send Invoice {target_invoice_name}",
-        invoice_name=target_invoice_name,
-    )
+    doc = frappe.get_doc("Sales Invoice", target_invoice_name)
+    sync_sales_invoice_efris_prices(doc)
+    process_invoice_t109(doc)
 
     return {
         "success": True,
-        "queued": True,
-        "message": f"Invoice {target_invoice_name} queued for EFRIS submission.",
+        "queued": False,
+        "message": f"Invoice {target_invoice_name} submitted to EFRIS.",
     }
-
-
-def send_invoice_to_efris_job(invoice_name):
-    try:
-        doc = frappe.get_doc("Sales Invoice", invoice_name)
-        sync_sales_invoice_efris_prices(doc)
-        process_invoice_t109(doc)
-    except Exception:
-        frappe.logger().error(
-            "EFRIS Send Invoice Job Error - %s\n%s",
-            invoice_name,
-            frappe.get_traceback(),
-        )
-        raise
 
 
 def process_invoice_t109(doc):

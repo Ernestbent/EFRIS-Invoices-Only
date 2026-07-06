@@ -19,12 +19,15 @@ frappe.ui.form.on('Sales Invoice', {
                 args: {
                     invoice_name: frm.doc.name
                 },
+                freeze: true,
+                freeze_message: __('Sending invoice to EFRIS...'),
                 callback: function(response) {
                     if (response.message && response.message.success) {
                         frappe.show_alert({
-                            message: __('Invoice queued for EFRIS submission'),
+                            message: __('Invoice submitted to EFRIS'),
                             indicator: 'green'
                         });
+                        frm.reload_doc();
                     }
                 }
             });
