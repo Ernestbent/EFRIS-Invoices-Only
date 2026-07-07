@@ -20,6 +20,7 @@ ZERO_TAX_CODE = "02"
 SALES_INVOICE_UOM_MAPPING = {
     "pieces": "PP",
     "piece": "PP",
+    "pair": "111",
     "litre": "102",
     "liter": "102",
 }
@@ -658,8 +659,14 @@ def update_sales_invoice_efris_fields(doc, decrypted_response):
 
     field_map = {
         "custom_qr_code": get_first_non_empty(summary.get("qrCode"), basic_information.get("qrCode")),
-        "custom_fdn": get_first_non_empty(basic_information.get("invoiceId"), decrypted_response.get("invoiceId")),
-        "custom_invoice_number": basic_information.get("invoiceNo"),
+        "custom_fdn": get_first_non_empty(
+            basic_information.get("invoiceNo"),
+            decrypted_response.get("invoiceNo"),
+        ),
+        "custom_invoice_number": get_first_non_empty(
+            basic_information.get("invoiceId"),
+            decrypted_response.get("invoiceId"),
+        ),
         "custom_verification_code": get_first_non_empty(
             basic_information.get("antifakeCode"),
             decrypted_response.get("antifakeCode"),
