@@ -20,6 +20,7 @@ ZERO_TAX_CODE = "02"
 SALES_INVOICE_UOM_MAPPING = {
     "pieces": "PP",
     "piece": "PP",
+    "pp-piece": "PP",
     "pair": "111",
     "litre": "102",
     "liter": "102",
