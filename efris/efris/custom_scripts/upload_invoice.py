@@ -228,12 +228,12 @@ def get_sales_invoice_item_vat_rate(item):
 
 
 def get_sales_invoice_item_uom_code(item):
-    item_uom = str(getattr(item, "uom", "") or "").strip()
+    item_uom = str(getattr(item, "custom_efris_uom", "") or "").strip()
     mapped_uom = SALES_INVOICE_UOM_MAPPING.get(item_uom.lower())
 
     if not mapped_uom:
         raise EFRISIntegrationError(
-            f"Unsupported Sales Invoice Item UOM '{item_uom}' on row {getattr(item, 'idx', '')}. "
+            f"Unsupported Sales Invoice Item EFRIS UOM '{item_uom}' on row {getattr(item, 'idx', '')}. "
             "Add it to SALES_INVOICE_UOM_MAPPING in upload_invoice.py."
         )
 
