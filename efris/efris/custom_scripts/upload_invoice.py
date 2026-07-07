@@ -17,6 +17,8 @@ STANDARD_TAX_RATE = 0.18
 ZERO_TAX_RATE = 0.0
 STANDARD_TAX_CODE = "01"
 ZERO_TAX_CODE = "02"
+EXEMPT_TAX_CODE = "03"
+EXEMPT_TAX_RATE = "-"
 SALES_INVOICE_UOM_MAPPING = {
     "pieces": "PP",
     "piece": "PP",
@@ -215,6 +217,9 @@ def get_sales_invoice_item_vat_rate(item):
         )
 
     vat_string = str(vat_value).strip().replace("%", "")
+    if vat_string == EXEMPT_TAX_RATE:
+        return EXEMPT_TAX_RATE
+
     try:
         vat_rate = Decimal(vat_string)
     except Exception as exc:
@@ -264,6 +269,9 @@ def get_tax_category_details(tax_rate):
     if tax_rate in (None, ""):
         raise EFRISIntegrationError("Missing VAT rate on Sales Invoice Item.")
 
+    if str(tax_rate).strip() == EXEMPT_TAX_RATE:
+        return EXEMPT_TAX_CODE, EXEMPT_TAX_RATE
+
     normalized_tax_rate = normalize_tax_rate(tax_rate)
 
     if normalized_tax_rate == STANDARD_TAX_RATE_DECIMAL:
@@ -273,11 +281,14 @@ def get_tax_category_details(tax_rate):
         return ZERO_TAX_CODE, str(int(ZERO_TAX_RATE))
 
     raise EFRISIntegrationError(
-        f"Unsupported EFRIS tax rate {tax_rate}. Only 0.18 and 0 are currently supported."
+        f"Unsupported EFRIS tax rate {tax_rate}. Only 0.18, 0, and - are currently supported."
     )
 
 
 def calculate_line_tax(total_amount, tax_rate):
+    if str(tax_rate).strip() == EXEMPT_TAX_RATE:
+        return Decimal("0.000")
+
     gross_amount = to_decimal(total_amount)
     rate = normalize_tax_rate(tax_rate)
 
@@ -307,6 +318,13 @@ def calculate_invoice_totals(goods_details):
             "taxAmount": Decimal("0.000"),
             "grossAmount": Decimal("0.00"),
         },
+        EXEMPT_TAX_CODE: {
+            "taxCategoryCode": EXEMPT_TAX_CODE,
+            "netAmount": Decimal("0.000"),
+            "taxRate": EXEMPT_TAX_RATE,
+            "taxAmount": Decimal("0.000"),
+            "grossAmount": Decimal("0.00"),
+        },
     }
 
     for goods_detail in goods_details:
@@ -330,7 +348,7 @@ def calculate_invoice_totals(goods_details):
     net_amount = truncate_three_decimals(gross_amount - tax_amount)
 
     formatted_tax_details = []
-    for tax_category_code in [STANDARD_TAX_CODE, ZERO_TAX_CODE]:
+    for tax_category_code in [STANDARD_TAX_CODE, ZERO_TAX_CODE, EXEMPT_TAX_CODE]:
         if tax_category_code not in used_tax_categories:
             continue
 
