@@ -7,29 +7,46 @@ from efris.efris.custom_scripts.upload_invoice import (
 )
 
 SALES_INVOICE_VOUCHER_TYPE = "Sales Invoice"
+CONTAINER_WAREHOUSES = (
+	"Cont. No. 1 = MAEU-8382503 - APL",
+	"Cont. No. 2 = FTBU-8875500 - APL",
+)
 
 
 def get_latest_item_balance(item_code="", efris_product_code=""):
-	filters = {}
+	filter_candidates = []
+	if efris_product_code:
+		filter_candidates.append({"efris_product_code": efris_product_code})
 	if item_code:
-		filters["item_code"] = item_code
-	elif efris_product_code:
-		filters["efris_product_code"] = efris_product_code
-	else:
+		filter_candidates.append({"item_code": item_code})
+
+	for filters in filter_candidates:
+		result = frappe.get_all(
+			"EFRIS Stock Ledger Entry",
+			filters=filters,
+			fields=["balance"],
+			order_by="posting_date desc, posting_time desc, creation desc",
+			limit=1,
+		)
+		if result:
+			return flt(result[0].get("balance"))
+
+	return 0
+
+
+def get_container_stock_qty(item_code=""):
+	if not item_code:
 		return 0
 
-	result = frappe.get_all(
-		"EFRIS Stock Ledger Entry",
-		filters=filters,
-		fields=["balance"],
-		order_by="posting_date desc, posting_time desc, creation desc",
-		limit=1,
+	container_bins = frappe.get_all(
+		"Bin",
+		filters={
+			"item_code": item_code,
+			"warehouse": ["in", CONTAINER_WAREHOUSES],
+		},
+		fields=["actual_qty"],
 	)
-
-	if not result:
-		return 0
-
-	return flt(result[0].get("balance"))
+	return sum(flt(container_bin.get("actual_qty")) for container_bin in container_bins)
 
 
 @frappe.whitelist()
@@ -45,6 +62,55 @@ def get_sales_invoice_item_efris_stock(item_code="", efris_product_code=""):
 			item_code=item_code,
 			efris_product_code=efris_product_code,
 		),
+		"containers_qty": get_container_stock_qty(item_code),
+	}
+
+
+@frappe.whitelist()
+def get_sales_invoice_efris_stock_rows(invoice_name="", items=None):
+	if invoice_name:
+		doc = frappe.get_doc("Sales Invoice", invoice_name)
+		doc.check_permission("read")
+	else:
+		doc = None
+
+	if isinstance(items, str):
+		items = frappe.parse_json(items)
+
+	if items is None and doc:
+		items = [
+			{
+				"row_name": item.name,
+				"item_code": item.item_code,
+				"efris_product_code": getattr(item, "custom_efris_product_code", "") or "",
+			}
+			for item in doc.items
+		]
+
+	items = items or []
+	if not isinstance(items, list):
+		frappe.throw("Sales Invoice items must be a list.")
+	if len(items) > 500:
+		frappe.throw("Cannot fetch EFRIS stock for more than 500 invoice rows at once.")
+
+	rows = {}
+	for item in items:
+		if not isinstance(item, dict):
+			frappe.throw("Each Sales Invoice item must be an object.")
+
+		row_name = str(item.get("row_name") or "").strip()
+		if not row_name:
+			continue
+
+		rows[row_name] = get_sales_invoice_item_efris_stock(
+			item_code=str(item.get("item_code") or "").strip(),
+			efris_product_code=str(item.get("efris_product_code") or "").strip(),
+		)
+
+	return {
+		"success": True,
+		"rows": rows,
+		"container_warehouses": list(CONTAINER_WAREHOUSES),
 	}
 
 

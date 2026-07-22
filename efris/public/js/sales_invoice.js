@@ -28,7 +28,8 @@ function getEfrisErrorMessage(error) {
 function updateStockDifference(row) {
     const efrisQty = Number(row.custom_efris_qty || 0);
     const actualQty = Number(row.actual_qty || 0);
-    row.custom_diffefris__main = efrisQty - actualQty;
+    const containersQty = Number(row.custom_containers_qty || 0);
+    row.custom_diffefris__main = efrisQty - (actualQty + containersQty);
 }
 
 function getWarehouseQty(row) {
@@ -40,6 +41,7 @@ function fetchEfrisStockForRow(frm, cdt, cdn) {
     if (!row || !row.item_code) {
         if (row) {
             row.custom_efris_qty = 0;
+            row.custom_containers_qty = 0;
             row.custom_diffefris__main = 0;
             frm.refresh_field('items');
         }
@@ -55,9 +57,44 @@ function fetchEfrisStockForRow(frm, cdt, cdn) {
         callback: function(response) {
             const result = response.message || {};
             row.custom_efris_qty = Number(result.efris_qty || 0);
+            row.custom_containers_qty = Number(result.containers_qty || 0);
             updateRowStockFields(frm, cdt, cdn);
             frm.refresh_field('items');
             scheduleRowStockDifferenceRefresh(frm, cdt, cdn);
+        }
+    });
+}
+
+function fetchAllEfrisStockForRows(frm) {
+    const items = (frm.doc.items || [])
+        .filter((row) => row.item_code)
+        .map((row) => ({
+            row_name: row.name,
+            item_code: row.item_code,
+            efris_product_code: row.custom_efris_product_code || ''
+        }));
+
+    if (!items.length) {
+        return;
+    }
+
+    frappe.call({
+        method: 'efris.efris.custom_scripts.efris_stock_ledger.get_sales_invoice_efris_stock_rows',
+        args: {
+            invoice_name: frm.is_new() ? '' : frm.doc.name,
+            items: JSON.stringify(items)
+        },
+        callback: function(response) {
+            const stockRows = response.message?.rows || {};
+
+            (frm.doc.items || []).forEach((row) => {
+                const stock = stockRows[row.name] || {};
+                row.custom_efris_qty = Number(stock.efris_qty || 0);
+                row.custom_containers_qty = Number(stock.containers_qty || 0);
+                updateStockDifference(row);
+            });
+
+            frm.refresh_field('items');
         }
     });
 }
@@ -70,7 +107,8 @@ function updateRowStockFields(frm, cdt, cdn) {
 
     const efrisQty = Number(row.custom_efris_qty || 0);
     const actualQty = getWarehouseQty(row);
-    row.custom_diffefris__main = efrisQty - actualQty;
+    const containersQty = Number(row.custom_containers_qty || 0);
+    row.custom_diffefris__main = efrisQty - (actualQty + containersQty);
 }
 
 function scheduleRowStockDifferenceRefresh(frm, cdt, cdn) {
@@ -135,7 +173,9 @@ function showEfrisItemSelectionDialog(frm) {
     }
 
     const problemItems = invoiceItems.filter((row) => {
-        const difference = Number(row.custom_efris_qty || 0) - Number(row.actual_qty || 0);
+        const difference = Number(row.custom_efris_qty || 0) - (
+            Number(row.actual_qty || 0) + Number(row.custom_containers_qty || 0)
+        );
         return difference < 0;
     });
 
@@ -149,7 +189,8 @@ function showEfrisItemSelectionDialog(frm) {
         const invoiceQty = Number(row.qty || 0);
         const efrisQty = Number(row.custom_efris_qty || 0);
         const warehouseQty = Number(row.actual_qty || 0);
-        const difference = efrisQty - warehouseQty;
+        const containersQty = Number(row.custom_containers_qty || 0);
+        const difference = efrisQty - (warehouseQty + containersQty);
         const differenceClass = difference < 0 ? 'text-danger' : 'text-success';
 
         return `
@@ -177,6 +218,7 @@ function showEfrisItemSelectionDialog(frm) {
                 </td>
                 <td class="text-right">${format_number(efrisQty)}</td>
                 <td class="text-right">${format_number(warehouseQty)}</td>
+                <td class="text-right">${format_number(containersQty)}</td>
                 <td class="text-right ${differenceClass}">${format_number(difference)}</td>
             </tr>
         `;
@@ -212,7 +254,10 @@ function showEfrisItemSelectionDialog(frm) {
             }
 
             const invoiceRow = invoiceItems.find((row) => row.name === rowName);
-            const difference = Number(invoiceRow?.custom_efris_qty || 0) - Number(invoiceRow?.actual_qty || 0);
+            const difference = Number(invoiceRow?.custom_efris_qty || 0) - (
+                Number(invoiceRow?.actual_qty || 0) +
+                Number(invoiceRow?.custom_containers_qty || 0)
+            );
             const itemLabel = invoiceRow?.item_code || invoiceRow?.item_name || rowName;
 
             if (difference < 0) {
@@ -298,6 +343,7 @@ function showEfrisItemSelectionDialog(frm) {
                                     <th style="width: 120px">${__('Qty to EFRIS')}</th>
                                     <th class="text-right">${__('EFRIS')}</th>
                                     <th class="text-right">${__('Warehouse')}</th>
+                                    <th class="text-right">${__('Containers')}</th>
                                     <th class="text-right">${__('Difference')}</th>
                                 </tr>
                             </thead>
@@ -336,6 +382,8 @@ function showEfrisItemSelectionDialog(frm) {
 
 frappe.ui.form.on('Sales Invoice', {
     refresh: function(frm) {
+        fetchAllEfrisStockForRows(frm);
+
         [400, 1200, 2500].forEach((delay) => {
             setTimeout(() => {
                 refreshAllEfrisStockDifferences(frm);
