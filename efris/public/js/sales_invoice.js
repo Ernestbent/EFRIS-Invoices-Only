@@ -27,13 +27,8 @@ function getEfrisErrorMessage(error) {
 
 function updateStockDifference(row) {
     const efrisQty = Number(row.custom_efris_qty || 0);
-    const actualQty = Number(row.actual_qty || 0);
-    const containersQty = Number(row.custom_containers_qty || 0);
-    row.custom_diffefris__main = efrisQty - (actualQty + containersQty);
-}
-
-function getWarehouseQty(row) {
-    return Number(row.actual_qty || 0);
+    const allWarehousesQty = Number(row.custom_containers_qty || 0);
+    row.custom_diffefris__main = efrisQty - allWarehousesQty;
 }
 
 function fetchEfrisStockForRow(frm, cdt, cdn) {
@@ -57,7 +52,7 @@ function fetchEfrisStockForRow(frm, cdt, cdn) {
         callback: function(response) {
             const result = response.message || {};
             row.custom_efris_qty = Number(result.efris_qty || 0);
-            row.custom_containers_qty = Number(result.containers_qty || 0);
+            row.custom_containers_qty = Number(result.all_warehouses_qty || 0);
             updateRowStockFields(frm, cdt, cdn);
             frm.refresh_field('items');
             scheduleRowStockDifferenceRefresh(frm, cdt, cdn);
@@ -90,7 +85,7 @@ function fetchAllEfrisStockForRows(frm) {
             (frm.doc.items || []).forEach((row) => {
                 const stock = stockRows[row.name] || {};
                 row.custom_efris_qty = Number(stock.efris_qty || 0);
-                row.custom_containers_qty = Number(stock.containers_qty || 0);
+                row.custom_containers_qty = Number(stock.all_warehouses_qty || 0);
                 updateStockDifference(row);
             });
 
@@ -106,9 +101,8 @@ function updateRowStockFields(frm, cdt, cdn) {
     }
 
     const efrisQty = Number(row.custom_efris_qty || 0);
-    const actualQty = getWarehouseQty(row);
-    const containersQty = Number(row.custom_containers_qty || 0);
-    row.custom_diffefris__main = efrisQty - (actualQty + containersQty);
+    const allWarehousesQty = Number(row.custom_containers_qty || 0);
+    row.custom_diffefris__main = efrisQty - allWarehousesQty;
 }
 
 function scheduleRowStockDifferenceRefresh(frm, cdt, cdn) {
@@ -173,9 +167,7 @@ function showEfrisItemSelectionDialog(frm) {
     }
 
     const problemItems = invoiceItems.filter((row) => {
-        const difference = Number(row.custom_efris_qty || 0) - (
-            Number(row.actual_qty || 0) + Number(row.custom_containers_qty || 0)
-        );
+        const difference = Number(row.custom_efris_qty || 0) - Number(row.custom_containers_qty || 0);
         return difference < 0;
     });
 
@@ -188,9 +180,8 @@ function showEfrisItemSelectionDialog(frm) {
     const itemRows = problemItems.map((row) => {
         const invoiceQty = Number(row.qty || 0);
         const efrisQty = Number(row.custom_efris_qty || 0);
-        const warehouseQty = Number(row.actual_qty || 0);
-        const containersQty = Number(row.custom_containers_qty || 0);
-        const difference = efrisQty - (warehouseQty + containersQty);
+        const allWarehousesQty = Number(row.custom_containers_qty || 0);
+        const difference = efrisQty - allWarehousesQty;
         const differenceClass = difference < 0 ? 'text-danger' : 'text-success';
 
         return `
@@ -217,8 +208,7 @@ function showEfrisItemSelectionDialog(frm) {
                     >
                 </td>
                 <td class="text-right">${format_number(efrisQty)}</td>
-                <td class="text-right">${format_number(warehouseQty)}</td>
-                <td class="text-right">${format_number(containersQty)}</td>
+                <td class="text-right">${format_number(allWarehousesQty)}</td>
                 <td class="text-right ${differenceClass}">${format_number(difference)}</td>
             </tr>
         `;
@@ -254,10 +244,8 @@ function showEfrisItemSelectionDialog(frm) {
             }
 
             const invoiceRow = invoiceItems.find((row) => row.name === rowName);
-            const difference = Number(invoiceRow?.custom_efris_qty || 0) - (
-                Number(invoiceRow?.actual_qty || 0) +
-                Number(invoiceRow?.custom_containers_qty || 0)
-            );
+            const difference = Number(invoiceRow?.custom_efris_qty || 0) -
+                Number(invoiceRow?.custom_containers_qty || 0);
             const itemLabel = invoiceRow?.item_code || invoiceRow?.item_name || rowName;
 
             if (difference < 0) {
@@ -342,8 +330,7 @@ function showEfrisItemSelectionDialog(frm) {
                                     <th>${__('Item')}</th>
                                     <th style="width: 120px">${__('Qty to EFRIS')}</th>
                                     <th class="text-right">${__('EFRIS')}</th>
-                                    <th class="text-right">${__('Warehouse')}</th>
-                                    <th class="text-right">${__('Containers')}</th>
+                                    <th class="text-right">${__('All Warehouses')}</th>
                                     <th class="text-right">${__('Difference')}</th>
                                 </tr>
                             </thead>

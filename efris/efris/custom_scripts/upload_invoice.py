@@ -221,7 +221,7 @@ def get_sales_invoice_item_uom_code(item):
 
 def validate_sales_invoice_efris_stock_difference(doc):
     from efris.efris.custom_scripts.efris_stock_ledger import (
-        get_container_stock_qty,
+        get_all_warehouses_stock_qty,
         get_latest_item_balance,
     )
 
@@ -235,23 +235,18 @@ def validate_sales_invoice_efris_stock_difference(doc):
                 efris_product_code=efris_data.get("product_code", "") or "",
             )
         )
-        warehouse_qty = getattr(item, "actual_qty", None)
-        if warehouse_qty in (None, ""):
-            warehouse_qty = getattr(item, "company_total_stock", 0)
-        warehouse_qty = truncate_two_decimals(warehouse_qty)
-        containers_qty = truncate_two_decimals(
-            get_container_stock_qty(getattr(item, "item_code", "") or "")
+        all_warehouses_qty = truncate_two_decimals(
+            get_all_warehouses_stock_qty(getattr(item, "item_code", "") or "")
         )
-        difference = truncate_two_decimals(efris_qty - (warehouse_qty + containers_qty))
+        difference = truncate_two_decimals(efris_qty - all_warehouses_qty)
 
         if difference < Decimal("0.00"):
             mismatch_rows.append(
-                "Row {row}: {item_code} - EFRIS {efris_qty}, Warehouse {warehouse_qty}, "
-                "Containers {containers_qty}, Difference {difference} is negative".format(
+                "Row {row}: {item_code} - EFRIS {efris_qty}, "
+                "All Warehouses {all_warehouses_qty}, Difference {difference} is negative".format(
                     row=getattr(item, "idx", "") or "?",
                     item_code=getattr(item, "item_code", "") or getattr(item, "item_name", "") or "Unknown Item",
-                    warehouse_qty=warehouse_qty,
-                    containers_qty=containers_qty,
+                    all_warehouses_qty=all_warehouses_qty,
                     efris_qty=efris_qty,
                     difference=difference,
                 )

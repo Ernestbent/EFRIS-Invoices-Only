@@ -7,10 +7,6 @@ from efris.efris.custom_scripts.upload_invoice import (
 )
 
 SALES_INVOICE_VOUCHER_TYPE = "Sales Invoice"
-CONTAINER_WAREHOUSES = (
-	"Cont. No. 1 = MAEU-8382503 - APL",
-	"Cont. No. 2 = FTBU-8875500 - APL",
-)
 
 
 def get_latest_item_balance(item_code="", efris_product_code=""):
@@ -34,19 +30,16 @@ def get_latest_item_balance(item_code="", efris_product_code=""):
 	return 0
 
 
-def get_container_stock_qty(item_code=""):
+def get_all_warehouses_stock_qty(item_code=""):
 	if not item_code:
 		return 0
 
-	container_bins = frappe.get_all(
+	warehouse_bins = frappe.get_all(
 		"Bin",
-		filters={
-			"item_code": item_code,
-			"warehouse": ["in", CONTAINER_WAREHOUSES],
-		},
+		filters={"item_code": item_code},
 		fields=["actual_qty"],
 	)
-	return sum(flt(container_bin.get("actual_qty")) for container_bin in container_bins)
+	return sum(flt(warehouse_bin.get("actual_qty")) for warehouse_bin in warehouse_bins)
 
 
 @frappe.whitelist()
@@ -62,7 +55,7 @@ def get_sales_invoice_item_efris_stock(item_code="", efris_product_code=""):
 			item_code=item_code,
 			efris_product_code=efris_product_code,
 		),
-		"containers_qty": get_container_stock_qty(item_code),
+		"all_warehouses_qty": get_all_warehouses_stock_qty(item_code),
 	}
 
 
@@ -110,7 +103,7 @@ def get_sales_invoice_efris_stock_rows(invoice_name="", items=None):
 	return {
 		"success": True,
 		"rows": rows,
-		"container_warehouses": list(CONTAINER_WAREHOUSES),
+		"warehouse_scope": "all",
 	}
 
 
