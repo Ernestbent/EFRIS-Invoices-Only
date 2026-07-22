@@ -45,7 +45,9 @@ app_license = "mit"
 # include js in doctype views
 doctype_js = {
     "Sales Invoice": "public/js/sales_invoice.js",
-    "EFRIS Settings": "public/js/efris_settings.js"
+    "Purchase Receipt": "public/js/purchase_receipt.js",
+    "EFRIS Settings": "public/js/efris_settings.js",
+    "Item": "public/js/item.js",
 }
 # doctype_js = {"EFRIS Settings" : "public/js/refresh_key.js"}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
@@ -142,9 +144,10 @@ doctype_js = {
 # Hook on document methods and events
 
 doc_events = {
-	# "Sales Invoice": {
-	# 	"before_save": "efris.efris.custom_scripts.upload_invoice.sync_sales_invoice_efris_prices"
-	# }
+	"Sales Invoice": {
+		"before_save": "efris.efris.custom_scripts.upload_invoice.sync_sales_invoice_efris_prices",
+		"on_update_after_submit": "efris.efris.custom_scripts.efris_stock_ledger.process_sales_invoice_efris_stock_movement",
+	}
 }
 
 # Scheduled Tasks
@@ -157,6 +160,9 @@ scheduler_events = {
 		],
 		"0 0 * * *": [
 			"efris.efris.background_tasks.efris_price_sync.sync_daily_efris_prices"
+		],
+		"5 0 * * *": [
+			"efris.efris.background_tasks.efris_stock_sync.sync_daily_efris_stock"
 		]
 	}
 }
