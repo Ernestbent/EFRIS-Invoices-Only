@@ -19,21 +19,32 @@ frappe.query_reports["EFRIS Stock Ledger"] = {
 	},
 	"filters": [
 		{
+			fieldname: "view",
+			label: __("View"),
+			fieldtype: "Select",
+			options: ["Closing Balances", "Ledger Entries"],
+			default: "Closing Balances",
+			reqd: 1,
+		},
+		{
 			fieldname: "from_date",
 			label: __("From Date"),
 			fieldtype: "Date",
 			default: frappe.datetime.month_start(),
+			depends_on: "eval:doc.view == 'Ledger Entries'",
 		},
 		{
 			fieldname: "to_date",
-			label: __("To Date"),
+			label: __("As Of / To Date"),
 			fieldtype: "Date",
-			default: frappe.datetime.month_end(),
+			default: frappe.datetime.get_today(),
+			reqd: 1,
 		},
 		{
 			fieldname: "from_time",
 			label: __("From Time"),
 			fieldtype: "Time",
+			depends_on: "eval:doc.view == 'Ledger Entries'",
 		},
 		{
 			fieldname: "to_time",
@@ -73,6 +84,7 @@ frappe.query_reports["EFRIS Stock Ledger"] = {
 			label: __("Include Opening Entries"),
 			fieldtype: "Check",
 			default: 1,
+			depends_on: "eval:doc.view == 'Ledger Entries'",
 		},
 	]
 };

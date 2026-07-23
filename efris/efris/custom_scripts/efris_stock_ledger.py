@@ -1,5 +1,5 @@
 import frappe
-from frappe.utils import flt
+from frappe.utils import add_days, cint, flt, getdate, nowdate
 
 from efris.efris.custom_scripts.upload_invoice import (
 	get_invoice_reference_no,
@@ -104,6 +104,128 @@ def get_sales_invoice_efris_stock_rows(invoice_name="", items=None):
 		"success": True,
 		"rows": rows,
 		"warehouse_scope": "all",
+	}
+
+
+def backfill_sales_invoice_stock_for_creation_date(creation_date="", dry_run=1):
+	"""Populate EFRIS stock fields without changing invoice or item modified timestamps."""
+	target_date = getdate(creation_date or nowdate())
+	next_date = add_days(target_date, 1)
+	invoices = frappe.get_all(
+		"Sales Invoice",
+		filters=[
+			["creation", ">=", f"{target_date} 00:00:00"],
+			["creation", "<", f"{next_date} 00:00:00"],
+		],
+		fields=["name", "modified"],
+		order_by="creation asc",
+	)
+	invoice_names = [invoice.name for invoice in invoices]
+	if not invoice_names:
+		return {
+			"success": True,
+			"dry_run": bool(cint(dry_run)),
+			"creation_date": str(target_date),
+			"invoices_found": 0,
+			"item_rows_updated": 0,
+		}
+
+	items = frappe.get_all(
+		"Sales Invoice Item",
+		filters={
+			"parenttype": "Sales Invoice",
+			"parent": ["in", invoice_names],
+		},
+		fields=[
+			"name",
+			"parent",
+			"item_code",
+			"custom_efris_product_code",
+			"modified",
+		],
+		order_by="parent asc, idx asc",
+	)
+	stock_by_item = {}
+	updates = []
+
+	for item in items:
+		item_code = str(item.item_code or "").strip()
+		product_code = str(item.custom_efris_product_code or "").strip()
+		stock_key = (item_code, product_code)
+		if stock_key not in stock_by_item:
+			stock_by_item[stock_key] = get_sales_invoice_item_efris_stock(
+				item_code=item_code,
+				efris_product_code=product_code,
+			)
+
+		stock = stock_by_item[stock_key]
+		efris_qty = flt(stock.get("efris_qty"))
+		all_warehouses_qty = flt(stock.get("all_warehouses_qty"))
+		updates.append(
+			{
+				"name": item.name,
+				"custom_efris_qty": efris_qty,
+				# Retain the existing fieldname for database compatibility; its label is All Warehouses Qty.
+				"custom_containers_qty": all_warehouses_qty,
+				"custom_diffefris__main": efris_qty - all_warehouses_qty,
+			}
+		)
+
+	if cint(dry_run):
+		return {
+			"success": True,
+			"dry_run": True,
+			"creation_date": str(target_date),
+			"invoices_found": len(invoices),
+			"item_rows_updated": len(updates),
+		}
+
+	invoice_modified_before = {invoice.name: invoice.modified for invoice in invoices}
+	item_modified_before = {item.name: item.modified for item in items}
+
+	try:
+		for update in updates:
+			item_name = update.pop("name")
+			frappe.db.set_value(
+				"Sales Invoice Item",
+				item_name,
+				update,
+				update_modified=False,
+			)
+
+		invoice_modified_after = dict(
+			frappe.get_all(
+				"Sales Invoice",
+				filters={"name": ["in", invoice_names]},
+				fields=["name", "modified"],
+				as_list=True,
+			)
+		)
+		item_modified_after = dict(
+			frappe.get_all(
+				"Sales Invoice Item",
+				filters={"name": ["in", list(item_modified_before)]},
+				fields=["name", "modified"],
+				as_list=True,
+			)
+		)
+		if invoice_modified_after != invoice_modified_before:
+			raise RuntimeError("A Sales Invoice modified timestamp changed; no changes were committed.")
+		if item_modified_after != item_modified_before:
+			raise RuntimeError("A Sales Invoice Item modified timestamp changed; no changes were committed.")
+
+		frappe.db.commit()
+	except Exception:
+		frappe.db.rollback()
+		raise
+
+	return {
+		"success": True,
+		"dry_run": False,
+		"creation_date": str(target_date),
+		"invoices_found": len(invoices),
+		"item_rows_updated": len(updates),
+		"modified_timestamps_preserved": True,
 	}
 
 

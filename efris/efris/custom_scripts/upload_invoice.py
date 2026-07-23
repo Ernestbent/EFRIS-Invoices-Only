@@ -219,45 +219,6 @@ def get_sales_invoice_item_uom_code(item):
     return mapped_uom
 
 
-def validate_sales_invoice_efris_stock_difference(doc):
-    from efris.efris.custom_scripts.efris_stock_ledger import (
-        get_all_warehouses_stock_qty,
-        get_latest_item_balance,
-    )
-
-    mismatch_rows = []
-
-    for item in getattr(doc, "items", []) or []:
-        efris_data = get_item_efris_data(item)
-        efris_qty = truncate_two_decimals(
-            get_latest_item_balance(
-                item_code=getattr(item, "item_code", "") or "",
-                efris_product_code=efris_data.get("product_code", "") or "",
-            )
-        )
-        all_warehouses_qty = truncate_two_decimals(
-            get_all_warehouses_stock_qty(getattr(item, "item_code", "") or "")
-        )
-        difference = truncate_two_decimals(efris_qty - all_warehouses_qty)
-
-        if difference < Decimal("0.00"):
-            mismatch_rows.append(
-                "Row {row}: {item_code} - EFRIS {efris_qty}, "
-                "All Warehouses {all_warehouses_qty}, Difference {difference} is negative".format(
-                    row=getattr(item, "idx", "") or "?",
-                    item_code=getattr(item, "item_code", "") or getattr(item, "item_name", "") or "Unknown Item",
-                    all_warehouses_qty=all_warehouses_qty,
-                    efris_qty=efris_qty,
-                    difference=difference,
-                )
-            )
-
-    if mismatch_rows:
-        raise EFRISIntegrationError(
-            "Cannot submit to URA EFRIS because stock validation failed:\n" + "\n".join(mismatch_rows)
-        )
-
-
 def filter_efris_payload_items(doc, excluded_row_names=None, quantity_overrides=None):
     if isinstance(excluded_row_names, str):
         try:
@@ -299,6 +260,10 @@ def filter_efris_payload_items(doc, excluded_row_names=None, quantity_overrides=
                     f"Invalid EFRIS quantity for row {getattr(item, 'idx', '')} item {item.item_code}."
                 )
 
+            if not quantity.is_finite():
+                raise EFRISIntegrationError(
+                    f"Invalid EFRIS quantity for row {getattr(item, 'idx', '')} item {item.item_code}."
+                )
             if quantity < 0:
                 raise EFRISIntegrationError(
                     f"EFRIS quantity cannot be negative for row {getattr(item, 'idx', '')} item {item.item_code}."
@@ -320,6 +285,32 @@ def filter_efris_payload_items(doc, excluded_row_names=None, quantity_overrides=
         item.idx = index
 
     return sorted(excluded_names), sorted(adjusted_names)
+
+
+def validate_efris_payload_stock(doc):
+    from efris.efris.custom_scripts.efris_stock_precheck import build_zero_stock_rows
+
+    shortage_rows = build_zero_stock_rows(doc)
+    if not shortage_rows:
+        return
+
+    shortage_items = "; ".join(
+        "{item} needs {qty} but EFRIS has {balance}".format(
+            item=(
+                row.get("item_code")
+                or row.get("item_name")
+                or row.get("efris_product_code")
+                or "Unknown Item"
+            ),
+            qty=truncate_two_decimals(row.get("qty", 0)),
+            balance=truncate_two_decimals(row.get("balance", 0)),
+        )
+        for row in shortage_rows
+    )
+    raise EFRISIntegrationError(
+        "The adjusted quantities still exceed the available EFRIS stock: "
+        f"{shortage_items}. Reduce the quantities or remove those items from the EFRIS submission."
+    )
 
 
 def to_decimal(value):
@@ -880,21 +871,7 @@ def on_send(
             quantity_overrides,
         )
 
-        validate_sales_invoice_efris_stock_difference(payload_doc)
-
-        from efris.efris.custom_scripts.efris_stock_precheck import build_zero_stock_rows
-
-        shortage_rows = [
-            row for row in build_zero_stock_rows(payload_doc)
-            if truncate_two_decimals(row.get("balance", 0)) <= Decimal("0.00")
-        ]
-        if shortage_rows:
-            shortage_items = ", ".join(
-                [row.get("item_code") or row.get("item_name") or row.get("efris_product_code") or "Unknown Item" for row in shortage_rows]
-            )
-            raise EFRISIntegrationError(
-                f"Some items still have insufficient EFRIS stock and were not removed from the payload: {shortage_items}"
-            )
+        validate_efris_payload_stock(payload_doc)
 
         sync_sales_invoice_efris_prices(payload_doc)
         process_invoice_t109(payload_doc, response_doc=response_doc)

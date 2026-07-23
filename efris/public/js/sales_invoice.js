@@ -182,7 +182,9 @@ function showEfrisItemSelectionDialog(frm) {
         const efrisQty = Number(row.custom_efris_qty || 0);
         const allWarehousesQty = Number(row.custom_containers_qty || 0);
         const difference = efrisQty - allWarehousesQty;
+        const balanceAfterSend = efrisQty - invoiceQty;
         const differenceClass = difference < 0 ? 'text-danger' : 'text-success';
+        const balanceAfterSendClass = balanceAfterSend < 0 ? 'text-danger' : 'text-success';
 
         return `
             <tr data-row-name="${escapeHtml(row.name)}" data-efris-deleted="0">
@@ -195,7 +197,7 @@ function showEfrisItemSelectionDialog(frm) {
                 </td>
                 <td class="efris-item-label">
                     ${escapeHtml(row.item_code || row.item_name)}
-                    <span class="badge badge-danger efris-deleted-label hide">${__('Deleted')}</span>
+                    <span class="badge badge-danger efris-deleted-label hide">${__('Removed')}</span>
                 </td>
                 <td>
                     <input
@@ -204,12 +206,16 @@ function showEfrisItemSelectionDialog(frm) {
                         data-row-name="${escapeHtml(row.name)}"
                         value="${escapeHtml(invoiceQty)}"
                         min="0"
+                        max="${escapeHtml(Math.max(efrisQty, 0))}"
                         step="any"
                     >
                 </td>
                 <td class="text-right">${format_number(efrisQty)}</td>
                 <td class="text-right">${format_number(allWarehousesQty)}</td>
                 <td class="text-right ${differenceClass}">${format_number(difference)}</td>
+                <td class="text-right efris-balance-after-send ${balanceAfterSendClass}">
+                    ${format_number(balanceAfterSend)}
+                </td>
             </tr>
         `;
     }).join('');
@@ -223,7 +229,7 @@ function showEfrisItemSelectionDialog(frm) {
         );
         const quantityOverrides = {};
         let invalidQuantity = false;
-        const negativeDifferenceItems = [];
+        const insufficientStockItems = [];
 
         dialog.$wrapper.find('.efris-send-qty').each((index, input) => {
             if (input.disabled) {
@@ -244,12 +250,13 @@ function showEfrisItemSelectionDialog(frm) {
             }
 
             const invoiceRow = invoiceItems.find((row) => row.name === rowName);
-            const difference = Number(invoiceRow?.custom_efris_qty || 0) -
-                Number(invoiceRow?.custom_containers_qty || 0);
+            const efrisQuantity = Number(invoiceRow?.custom_efris_qty || 0);
             const itemLabel = invoiceRow?.item_code || invoiceRow?.item_name || rowName;
 
-            if (difference < 0) {
-                negativeDifferenceItems.push(itemLabel);
+            if (quantity > efrisQuantity) {
+                insufficientStockItems.push(
+                    `${itemLabel} (${format_number(quantity)} > ${format_number(efrisQuantity)})`
+                );
                 return;
             }
 
@@ -263,10 +270,10 @@ function showEfrisItemSelectionDialog(frm) {
             return null;
         }
 
-        if (negativeDifferenceItems.length) {
+        if (insufficientStockItems.length) {
             frappe.msgprint(
-                __('EFRIS difference is negative for: {0}. Delete these items before submitting.', [
-                    negativeDifferenceItems.join(', ')
+                __('Qty to EFRIS cannot exceed the available EFRIS stock: {0}. Reduce the quantity, set it to zero, or delete the item from this submission.', [
+                    insufficientStockItems.join(', ')
                 ])
             );
             return null;
@@ -311,7 +318,7 @@ function showEfrisItemSelectionDialog(frm) {
                 fieldname: 'items',
                 options: `
                     <p class="text-muted">
-                        ${__('These items have a negative EFRIS difference. Delete them from this submission or set Qty to EFRIS to zero.')}
+                        ${__('These items have a negative EFRIS difference. Adjust Qty to EFRIS so it does not exceed the available EFRIS stock, or remove the item from this submission. These changes apply only to what is sent to URA.')}
                     </p>
                     <style>
                         .efris-row-deleted td:not(:first-child) {
@@ -332,13 +339,14 @@ function showEfrisItemSelectionDialog(frm) {
                                     <th class="text-right">${__('EFRIS')}</th>
                                     <th class="text-right">${__('All Warehouses')}</th>
                                     <th class="text-right">${__('Difference')}</th>
+                                    <th class="text-right">${__('EFRIS After Send')}</th>
                                 </tr>
                             </thead>
                             <tbody>${itemRows}</tbody>
                         </table>
                     </div>
                     <button type="button" class="btn btn-danger btn-sm efris-delete-selected">
-                        ${__('Delete ')}
+                        ${__('Remove Selected')}
                     </button>
                 `
             }
@@ -350,10 +358,21 @@ function showEfrisItemSelectionDialog(frm) {
     });
 
     dialog.show();
+    dialog.$wrapper.on('input', '.efris-send-qty', function() {
+        const invoiceRow = invoiceItems.find((row) => row.name === this.dataset.rowName);
+        const quantity = Number(this.value || 0);
+        const balanceAfterSend = Number(invoiceRow?.custom_efris_qty || 0) - quantity;
+        const balanceCell = $(this).closest('tr').find('.efris-balance-after-send');
+
+        balanceCell
+            .text(format_number(balanceAfterSend))
+            .toggleClass('text-danger', balanceAfterSend < 0)
+            .toggleClass('text-success', balanceAfterSend >= 0);
+    });
     dialog.$wrapper.on('click', '.efris-delete-selected', function() {
         const selectedItems = dialog.$wrapper.find('.efris-select-item:checked');
         if (!selectedItems.length) {
-            frappe.msgprint(__('Select at least one item to delete from the EFRIS submission.'));
+            frappe.msgprint(__('Select at least one item to remove from the EFRIS submission.'));
             return;
         }
 
