@@ -166,23 +166,14 @@ function showEfrisItemSelectionDialog(frm) {
         return;
     }
 
-    const problemItems = invoiceItems.filter((row) => {
-        const difference = Number(row.custom_efris_qty || 0) - Number(row.custom_containers_qty || 0);
-        return difference < 0;
-    });
-
-    if (!problemItems.length) {
-        sendInvoiceToEfris(frm);
-        return;
-    }
-
     const escapeHtml = (value) => frappe.utils.escape_html(String(value ?? ''));
-    const itemRows = problemItems.map((row) => {
+    const itemRows = invoiceItems.map((row) => {
         const invoiceQty = Number(row.qty || 0);
         const efrisQty = Number(row.custom_efris_qty || 0);
         const allWarehousesQty = Number(row.custom_containers_qty || 0);
         const difference = efrisQty - allWarehousesQty;
-        const balanceAfterSend = efrisQty - invoiceQty;
+        const sendQty = invoiceQty;
+        const balanceAfterSend = efrisQty - sendQty;
         const differenceClass = difference < 0 ? 'text-danger' : 'text-success';
         const balanceAfterSendClass = balanceAfterSend < 0 ? 'text-danger' : 'text-success';
 
@@ -204,9 +195,9 @@ function showEfrisItemSelectionDialog(frm) {
                         type="number"
                         class="form-control input-xs efris-send-qty"
                         data-row-name="${escapeHtml(row.name)}"
-                        value="${escapeHtml(invoiceQty)}"
+                        value="${escapeHtml(sendQty)}"
                         min="0"
-                        max="${escapeHtml(Math.max(efrisQty, 0))}"
+                        max="${escapeHtml(Math.max(Math.min(invoiceQty, efrisQty), 0))}"
                         step="any"
                     >
                 </td>
@@ -229,6 +220,7 @@ function showEfrisItemSelectionDialog(frm) {
         );
         const quantityOverrides = {};
         let invalidQuantity = false;
+        const aboveInvoiceQuantityItems = [];
         const insufficientStockItems = [];
 
         dialog.$wrapper.find('.efris-send-qty').each((index, input) => {
@@ -238,6 +230,10 @@ function showEfrisItemSelectionDialog(frm) {
 
             const quantity = Number(input.value);
             const rowName = input.dataset.rowName;
+            const invoiceRow = invoiceItems.find((row) => row.name === rowName);
+            const invoiceQuantity = Number(invoiceRow?.qty || 0);
+            const efrisQuantity = Number(invoiceRow?.custom_efris_qty || 0);
+            const itemLabel = invoiceRow?.item_code || invoiceRow?.item_name || rowName;
 
             if (!Number.isFinite(quantity) || quantity < 0) {
                 invalidQuantity = true;
@@ -249,9 +245,12 @@ function showEfrisItemSelectionDialog(frm) {
                 return;
             }
 
-            const invoiceRow = invoiceItems.find((row) => row.name === rowName);
-            const efrisQuantity = Number(invoiceRow?.custom_efris_qty || 0);
-            const itemLabel = invoiceRow?.item_code || invoiceRow?.item_name || rowName;
+            if (quantity > invoiceQuantity) {
+                aboveInvoiceQuantityItems.push(
+                    `${itemLabel} (${format_number(quantity)} > ${format_number(invoiceQuantity)})`
+                );
+                return;
+            }
 
             if (quantity > efrisQuantity) {
                 insufficientStockItems.push(
@@ -267,6 +266,15 @@ function showEfrisItemSelectionDialog(frm) {
 
         if (invalidQuantity) {
             frappe.msgprint(__('Qty to EFRIS must be zero or a positive number.'));
+            return null;
+        }
+
+        if (aboveInvoiceQuantityItems.length) {
+            frappe.msgprint(
+                __('Qty to EFRIS cannot exceed the quantity on the Sales Invoice: {0}.', [
+                    aboveInvoiceQuantityItems.join(', ')
+                ])
+            );
             return null;
         }
 
@@ -318,7 +326,7 @@ function showEfrisItemSelectionDialog(frm) {
                 fieldname: 'items',
                 options: `
                     <p class="text-muted">
-                        ${__('These items have a negative EFRIS difference. Adjust Qty to EFRIS so it does not exceed the available EFRIS stock, or remove the item from this submission. These changes apply only to what is sent to URA.')}
+                        ${__('Adjust Qty to EFRIS so it does not exceed the Sales Invoice quantity or the available EFRIS stock, or remove the item from this submission. These changes apply only to what is sent to URA.')}
                     </p>
                     <style>
                         .efris-row-deleted td:not(:first-child) {

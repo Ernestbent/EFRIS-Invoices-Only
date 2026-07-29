@@ -255,6 +255,7 @@ def filter_efris_payload_items(doc, excluded_row_names=None, quantity_overrides=
         if item.name in quantity_overrides:
             try:
                 quantity = Decimal(str(quantity_overrides[item.name]))
+                invoice_quantity = Decimal(str(item.qty))
             except (InvalidOperation, TypeError, ValueError):
                 raise EFRISIntegrationError(
                     f"Invalid EFRIS quantity for row {getattr(item, 'idx', '')} item {item.item_code}."
@@ -267,6 +268,11 @@ def filter_efris_payload_items(doc, excluded_row_names=None, quantity_overrides=
             if quantity < 0:
                 raise EFRISIntegrationError(
                     f"EFRIS quantity cannot be negative for row {getattr(item, 'idx', '')} item {item.item_code}."
+                )
+            if quantity > invoice_quantity:
+                raise EFRISIntegrationError(
+                    f"EFRIS quantity cannot exceed the Sales Invoice quantity for row "
+                    f"{getattr(item, 'idx', '')} item {item.item_code}."
                 )
             if quantity == 0:
                 excluded_names.add(item.name)
