@@ -17,7 +17,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "EFRIS Settings",
-   "link_count": 1,
+   "link_count": 2,
    "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
@@ -28,6 +28,16 @@
    "label": "EFRIS Settings",
    "link_count": 0,
    "link_to": "EFRIS Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Goods Categories",
+   "link_count": 0,
+   "link_to": "EFRIS Goods Category",
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"

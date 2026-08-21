@@ -308,8 +308,10 @@ def test_efris_complete_flow():
     try:
         return refresh_efris_aes_key()
     except Exception as e:
-        error_msg = str(e)[:200]
-        frappe.log_error(error_msg, "EFRIS Key Manager")
+        frappe.log_error(
+            title="EFRIS Key Manager",
+            message=frappe.get_traceback(),
+        )
         return {"success": False, "error": str(e)}
 
 
@@ -317,8 +319,14 @@ def refresh_daily_efris_aes_key():
     try:
         result = refresh_efris_aes_key()
         if not result.get("success"):
-            frappe.log_error(result.get("error"), "EFRIS Daily AES Key Refresh")
+            frappe.log_error(
+                title="EFRIS Daily AES Key Refresh",
+                message=result.get("error"),
+            )
         return result
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "EFRIS Daily AES Key Refresh")
+        frappe.log_error(
+            title="EFRIS Daily AES Key Refresh",
+            message=frappe.get_traceback(),
+        )
         return {"success": False, "error": "AES key refresh failed"}

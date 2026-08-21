@@ -116,6 +116,7 @@ def backfill_sales_invoice_stock_for_creation_date(creation_date="", dry_run=1):
 		filters=[
 			["creation", ">=", f"{target_date} 00:00:00"],
 			["creation", "<", f"{next_date} 00:00:00"],
+			["is_return", "=", 0],
 		],
 		fields=["name", "modified"],
 		order_by="creation asc",

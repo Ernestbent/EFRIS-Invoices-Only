@@ -71,7 +71,7 @@ function addPurchaseReceiptEfrisButton(frm) {
                 return;
             }
 
-            frm.add_custom_button(__('Sync with EFRIS'), () => {
+            frm.add_custom_button(__('Send To EFRIS'), () => {
                 syncPurchaseReceiptWithEfris(frm);
             }).addClass('btn-primary');
         }

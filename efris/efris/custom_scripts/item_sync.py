@@ -64,6 +64,33 @@ def validate_vat_value(vat):
     return normalized_vat
 
 
+def validate_goods_category(category_id):
+    category_id = str(category_id or "").strip()
+    if not category_id:
+        raise EFRISIntegrationError("EFRIS Goods Category is required.")
+
+    category = frappe.db.get_value(
+        "EFRIS Goods Category",
+        category_id,
+        ["enabled", "is_leaf_node", "excisable"],
+        as_dict=True,
+    )
+    if not category:
+        raise EFRISIntegrationError(
+            "EFRIS Goods Category was not found locally. Sync Goods Categories from EFRIS Settings first."
+        )
+    if not category.enabled:
+        raise EFRISIntegrationError("The selected EFRIS Goods Category is disabled by URA.")
+    if not category.is_leaf_node:
+        raise EFRISIntegrationError("Select a leaf EFRIS Goods Category.")
+    if category.excisable:
+        raise EFRISIntegrationError(
+            "The selected category is excisable. Excise duty item synchronization is not configured yet."
+        )
+
+    return category_id
+
+
 def build_t130_payload(item, goods_name, category_id, efris_uom, unit_price):
     goods_code = (item.custom_efris_product_code or item.item_code or "").strip()
     operation_type = MODIFY_OPERATION if item.custom_efris_product_code else ADD_OPERATION
@@ -77,9 +104,7 @@ def build_t130_payload(item, goods_name, category_id, efris_uom, unit_price):
     if not goods_name:
         raise EFRISIntegrationError("EFRIS Goods Name is required.")
 
-    category_id = str(category_id or "").strip()
-    if not category_id:
-        raise EFRISIntegrationError("EFRIS Goods Category ID is required.")
+    category_id = validate_goods_category(category_id)
 
     return [
         {
@@ -99,16 +124,9 @@ def build_t130_payload(item, goods_name, category_id, efris_uom, unit_price):
             "packageScaledValue": "",
             "pieceScaledValue": "",
             "exciseDutyCode": "",
-            "haveOtherUnit": NO_FLAG,
+            "haveOtherUnit": "102",
             "goodsTypeCode": "101",
-            "haveCustomsUnit": NO_FLAG,
-            "commodityGoodsExtendEntity": {
-                "customsMeasureUnit": "",
-                "customsUnitPrice": "",
-                "packageScaledValueCustoms": "",
-                "customsScaledValue": "",
-            },
-            "customsUnitList": [],
+            "haveCustomsUnit": "102",
             "goodsOtherUnits": [],
         }
     ]

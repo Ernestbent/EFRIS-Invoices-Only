@@ -51,7 +51,7 @@ def normalize_positive_decimal(value, label):
 
 
 def get_purchase_receipt_stock_in_type(doc):
-    stock_in_type = str(getattr(doc, "custom_stock_in_type", "") or "Local Purchase").strip()
+    stock_in_type = str(getattr(doc, "custom_stock_in_type", "") or "Import").strip()
     stock_in_type_code = STOCK_IN_TYPE_MAPPING.get(stock_in_type)
     if not stock_in_type_code:
         raise EFRISIntegrationError(
@@ -423,8 +423,8 @@ def process_purchase_receipt_t131(doc):
     except Exception:
         frappe.db.rollback()
         frappe.log_error(
-            frappe.get_traceback(),
-            f"EFRIS T131 Stock Ledger Update Error - {doc.name}",
+            title=f"EFRIS T131 Stock Ledger Update Error - {doc.name}"[:140],
+            message=frappe.get_traceback(),
         )
         ledger_warning = (
             "EFRIS accepted the stock-in, but the local EFRIS Stock Ledger could not be updated. "
@@ -470,7 +470,7 @@ def sync_purchase_receipt_with_efris(purchase_receipt_name):
         frappe.throw(str(exc), title="EFRIS Stock-In Blocked")
     except Exception:
         frappe.log_error(
-            frappe.get_traceback(),
-            f"EFRIS T131 Purchase Receipt Error - {purchase_receipt_name}",
+            title=f"EFRIS T131 Purchase Receipt Error - {purchase_receipt_name}"[:140],
+            message=frappe.get_traceback(),
         )
         raise
