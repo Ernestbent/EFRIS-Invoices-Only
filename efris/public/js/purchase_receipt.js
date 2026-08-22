@@ -22,6 +22,30 @@ function getPurchaseReceiptEfrisError(error) {
     );
 }
 
+function silentlyBackfillPurchaseReceiptEfrisFields(frm) {
+    if (frm.is_new() || frm.is_dirty() || frm.doc.is_return || frm.__efris_backfill_running) {
+        return;
+    }
+
+    frm.__efris_backfill_running = true;
+    frappe.call({
+        method: 'efris.efris.custom_scripts.purchase_receipt_stock_in.backfill_purchase_receipt_item_efris_fields',
+        args: {
+            purchase_receipt_name: frm.doc.name,
+            dry_run: 0
+        },
+        callback(response) {
+            frm.__efris_backfill_running = false;
+            if (response.message?.rows_updated) {
+                frm.reload_doc();
+            }
+        },
+        error() {
+            frm.__efris_backfill_running = false;
+        }
+    });
+}
+
 function syncPurchaseReceiptWithEfris(frm) {
     frappe.call({
         method: 'efris.efris.custom_scripts.purchase_receipt_stock_in.sync_purchase_receipt_with_efris',
@@ -80,6 +104,8 @@ function addPurchaseReceiptEfrisButton(frm) {
 
 frappe.ui.form.on('Purchase Receipt', {
     refresh(frm) {
+        silentlyBackfillPurchaseReceiptEfrisFields(frm);
+
         if (frm.doc.docstatus !== 1 || frm.doc.is_return || !frm.perm?.[0]?.submit) {
             return;
         }

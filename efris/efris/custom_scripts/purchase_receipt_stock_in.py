@@ -58,9 +58,24 @@ def normalize_positive_decimal(value, label):
     return number
 
 
+def is_empty_purchase_receipt_item_efris_value(row, fieldname):
+    value = row.get(fieldname)
+    if fieldname == "custom_efris_purchase_price":
+        try:
+            return Decimal(str(value or "0").replace(",", "").strip()) <= 0
+        except InvalidOperation:
+            return True
+
+    return not str(value or "").strip()
+
+
+@frappe.whitelist()
 def backfill_purchase_receipt_item_efris_fields(purchase_receipt_name, dry_run=1):
     """Copy Item master EFRIS values onto existing Purchase Receipt Item rows."""
     doc = frappe.get_doc(PURCHASE_RECEIPT_VOUCHER_TYPE, purchase_receipt_name)
+    if not frappe.has_permission(PURCHASE_RECEIPT_VOUCHER_TYPE, "read", doc=doc):
+        frappe.throw("You do not have permission to read this Purchase Receipt.")
+
     item_codes = sorted({row.item_code for row in doc.items if row.item_code})
     item_records = frappe.get_all(
         "Item",
@@ -85,7 +100,8 @@ def backfill_purchase_receipt_item_efris_fields(purchase_receipt_name, dry_run=1
         changed_values = {
             fieldname: value
             for fieldname, value in values.items()
-            if str(row.get(fieldname) or "") != str(value)
+            if value not in (None, "")
+            and is_empty_purchase_receipt_item_efris_value(row, fieldname)
         }
         if changed_values:
             updates.append({"row_name": row.name, "item_code": row.item_code, "values": changed_values})
@@ -428,6 +444,8 @@ def validate_purchase_receipt(doc):
 
 def process_purchase_receipt_t131(doc):
     validate_purchase_receipt(doc)
+    backfill_purchase_receipt_item_efris_fields(doc.name, dry_run=0)
+    doc.reload()
     aggregated_items = aggregate_purchase_receipt_items(doc)
     settings = get_efris_settings()
     payload = build_t131_payload(doc, aggregated_items)
