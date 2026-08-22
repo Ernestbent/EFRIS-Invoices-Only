@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 import frappe
 import requests
+from frappe.utils import cint
 
 from efris.efris.background_tasks.encryption import encrypt_dynamic_json
 from efris.efris.custom_scripts.item_sync import get_efris_uom_code
@@ -32,6 +33,13 @@ ITEM_EFRIS_FIELDS = [
     "custom_uom_code_efris",
     "custom_purchase_price",
 ]
+PURCHASE_RECEIPT_ITEM_EFRIS_FIELDS = {
+    "custom_efris_product_code": "custom_efris_product_code",
+    "custom_efris_item_name": "custom_goods_service_name",
+    "custom_goods_category_id": "custom_goods_category_id",
+    "custom_efris_uom": "custom_uom_code_efris",
+    "custom_efris_purchase_price": "custom_purchase_price",
+}
 
 
 def normalize_positive_decimal(value, label):
@@ -50,6 +58,59 @@ def normalize_positive_decimal(value, label):
     return number
 
 
+def backfill_purchase_receipt_item_efris_fields(purchase_receipt_name, dry_run=1):
+    """Copy Item master EFRIS values onto existing Purchase Receipt Item rows."""
+    doc = frappe.get_doc(PURCHASE_RECEIPT_VOUCHER_TYPE, purchase_receipt_name)
+    item_codes = sorted({row.item_code for row in doc.items if row.item_code})
+    item_records = frappe.get_all(
+        "Item",
+        filters={"name": ["in", item_codes]},
+        fields=["name", *ITEM_EFRIS_FIELDS],
+        limit_page_length=0,
+    )
+    item_values = {row.name: row for row in item_records}
+    updates = []
+    missing_items = []
+
+    for row in doc.items:
+        source = item_values.get(row.item_code)
+        if not source:
+            missing_items.append(row.item_code)
+            continue
+
+        values = {
+            target_field: source.get(source_field) or ""
+            for target_field, source_field in PURCHASE_RECEIPT_ITEM_EFRIS_FIELDS.items()
+        }
+        changed_values = {
+            fieldname: value
+            for fieldname, value in values.items()
+            if str(row.get(fieldname) or "") != str(value)
+        }
+        if changed_values:
+            updates.append({"row_name": row.name, "item_code": row.item_code, "values": changed_values})
+
+    if not cint(dry_run):
+        for update in updates:
+            frappe.db.set_value(
+                "Purchase Receipt Item",
+                update["row_name"],
+                update["values"],
+                update_modified=False,
+            )
+        frappe.db.commit()
+
+    return {
+        "success": not missing_items,
+        "dry_run": bool(cint(dry_run)),
+        "purchase_receipt": doc.name,
+        "rows_checked": len(doc.items),
+        "rows_to_update": len(updates),
+        "rows_updated": 0 if cint(dry_run) else len(updates),
+        "missing_items": sorted(set(missing_items)),
+    }
+
+
 def get_purchase_receipt_stock_in_type(doc):
     stock_in_type = str(getattr(doc, "custom_stock_in_type", "") or "Import").strip()
     stock_in_type_code = STOCK_IN_TYPE_MAPPING.get(stock_in_type)
@@ -62,23 +123,22 @@ def get_purchase_receipt_stock_in_type(doc):
 
 def get_item_efris_stock_in_data(item_row):
     item_code = str(getattr(item_row, "item_code", "") or "").strip()
+    row_number = getattr(item_row, "idx", "")
     if not item_code:
         raise EFRISIntegrationError(
-            f"Missing Item Code on Purchase Receipt row {getattr(item_row, 'idx', '')}."
+            f"Missing Item Code on Purchase Receipt row {row_number}."
         )
 
-    values = frappe.get_cached_value("Item", item_code, ITEM_EFRIS_FIELDS) or []
-    item_values = dict(zip(ITEM_EFRIS_FIELDS, values))
-    product_code = str(item_values.get("custom_efris_product_code") or "").strip()
-    efris_uom = str(item_values.get("custom_uom_code_efris") or "").strip()
+    product_code = str(getattr(item_row, "custom_efris_product_code", "") or "").strip()
+    efris_uom = str(getattr(item_row, "custom_efris_uom", "") or "").strip()
 
     if not product_code:
         raise EFRISIntegrationError(
-            f"Missing EFRIS Product Code in Item {item_code}."
+            f"Missing EFRIS Product Code on Purchase Receipt row {row_number} for Item {item_code}."
         )
     if not efris_uom:
         raise EFRISIntegrationError(
-            f"Missing EFRIS Unit of Measure in Item {item_code}."
+            f"Missing EFRIS UOM on Purchase Receipt row {row_number} for Item {item_code}."
         )
 
     quantity_value = getattr(item_row, "stock_qty", None)
@@ -88,8 +148,8 @@ def get_item_efris_stock_in_data(item_row):
     return {
         "item_code": item_code,
         "item_name": getattr(item_row, "item_name", "") or "",
-        "goods_name": str(item_values.get("custom_goods_service_name") or "").strip(),
-        "goods_category_id": str(item_values.get("custom_goods_category_id") or "").strip(),
+        "goods_name": str(getattr(item_row, "custom_efris_item_name", "") or "").strip(),
+        "goods_category_id": str(getattr(item_row, "custom_goods_category_id", "") or "").strip(),
         "product_code": product_code,
         "uom": get_efris_uom_code(efris_uom),
         "quantity": normalize_positive_decimal(
@@ -97,8 +157,8 @@ def get_item_efris_stock_in_data(item_row):
             f"Stock Quantity for Item {item_code}",
         ),
         "unit_price": normalize_positive_decimal(
-            item_values.get("custom_purchase_price"),
-            f"Purchase Price in Item {item_code}",
+            getattr(item_row, "custom_efris_purchase_price", None),
+            f"EFRIS Purchase Price on Purchase Receipt row {row_number} for Item {item_code}",
         ),
     }
 
