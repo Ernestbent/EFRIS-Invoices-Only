@@ -163,10 +163,12 @@ scheduler_events = {
 		],
 		"5 0 * * *": [
 			"efris.efris.background_tasks.efris_stock_sync.sync_daily_efris_stock"
-		]
+		],
+        "* * * * *": [
+            "efris.efris.custom_scripts.efris_price_sync.push_price_changes"
+        ],
 	}
 }
-
 # Testing
 # -------
 

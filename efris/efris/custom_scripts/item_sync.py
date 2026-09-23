@@ -77,7 +77,7 @@ def validate_goods_category(category_id):
     )
     if not category:
         raise EFRISIntegrationError(
-            "EFRIS Goods Category was not found locally. Sync Goods Categories from EFRIS Settings first."
+            "EFRIS Goods Category was not found locally. Create or import the category first."
         )
     if not category.enabled:
         raise EFRISIntegrationError("The selected EFRIS Goods Category is disabled by URA.")

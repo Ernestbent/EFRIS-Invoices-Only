@@ -38,23 +38,5 @@ frappe.ui.form.on('EFRIS Settings', {
             __('Actions')
         );
 
-        frm.add_custom_button(
-            __('Sync Goods Categories'),
-            function() {
-                frappe.call({
-                    method: 'efris.efris.doctype.efris_goods_category.efris_goods_category.enqueue_goods_category_sync',
-                    callback: function(response) {
-                        if (response.message && response.message.success) {
-                            frappe.show_alert({
-                                message: response.message.message,
-                                indicator: 'blue'
-                            });
-                        }
-                    }
-                });
-            },
-            __('Actions')
-        );
-
     }
 });

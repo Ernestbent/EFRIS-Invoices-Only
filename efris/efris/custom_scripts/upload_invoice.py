@@ -821,6 +821,7 @@ def handle_efris_response(
             aes_key=aes_key,
             reference_docname=doc.name,
         )
+        efris_fields_updated = False
         try:
             encrypted_content = response_data.get("data", {}).get("content")
             settings_aes_key = (
@@ -834,6 +835,7 @@ def handle_efris_response(
                     decrypted_response,
                     stock_movement_doc=stock_movement_doc,
                 )
+                efris_fields_updated = True
         except Exception:
             frappe.logger().error(
                 "EFRIS Sales Invoice Response Sync Error\n%s",
@@ -842,6 +844,19 @@ def handle_efris_response(
             frappe.msgprint(
                 "Invoice was sent to EFRIS, but the returned EFRIS fields could not be updated automatically."
             )
+
+        if efris_fields_updated:
+            try:
+                from efris.efris.custom_scripts.efris_invoice_pdf import (
+                    enqueue_ura_invoice_pdf,
+                )
+
+                enqueue_ura_invoice_pdf(doc.name)
+            except Exception:
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    f"EFRIS Invoice PDF Queue Error - {doc.name}",
+                )
     else:
         log_integration_request(
             'Failed',
