@@ -124,7 +124,12 @@ class TestEFRISInvoicePDF(TestCase):
                 "custom_fdn": "126901526041",
             }.get(fieldname),
         )
-        attached_file = Mock()
+        attached_file = SimpleNamespace(
+            name="file-record-name",
+            file_name="SINV-0001-EFRIS.pdf",
+            file_url="/private/files/SINV-0001-EFRIS.pdf",
+            is_private=1,
+        )
         frappe.get_all.return_value = []
         frappe.get_doc.return_value = invoice
         download.return_value = b"%PDF-1.4 official invoice"
@@ -143,6 +148,21 @@ class TestEFRISInvoicePDF(TestCase):
             "Sales Invoice",
             "SINV-0001",
             is_private=1,
+        )
+        frappe.publish_realtime.assert_called_once_with(
+            "efris_invoice_pdf_attached",
+            {
+                "invoice_name": "SINV-0001",
+                "attachment": {
+                    "name": "file-record-name",
+                    "file_name": "SINV-0001-EFRIS.pdf",
+                    "file_url": "/private/files/SINV-0001-EFRIS.pdf",
+                    "is_private": 1,
+                },
+            },
+            doctype="Sales Invoice",
+            docname="SINV-0001",
+            after_commit=True,
         )
 
     @patch("efris.efris.custom_scripts.efris_invoice_pdf.download_ura_invoice_pdf")

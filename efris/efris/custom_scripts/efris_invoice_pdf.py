@@ -156,13 +156,31 @@ def save_ura_invoice_pdf(inv_name):
     pdf_url = get_ura_invoice_pdf_url(invoice.get("custom_qr_code"))
     pdf_content = download_ura_invoice_pdf(invoice_no, pdf_url)
 
-    return save_file(
+    file_doc = save_file(
         file_name,
         pdf_content,
         invoice.doctype,
         invoice.name,
         is_private=1,
     )
+
+    frappe.publish_realtime(
+        "efris_invoice_pdf_attached",
+        {
+            "invoice_name": invoice.name,
+            "attachment": {
+                "name": file_doc.name,
+                "file_name": file_doc.file_name,
+                "file_url": file_doc.file_url,
+                "is_private": file_doc.is_private,
+            },
+        },
+        doctype=invoice.doctype,
+        docname=invoice.name,
+        after_commit=True,
+    )
+
+    return file_doc
 
 
 def enqueue_ura_invoice_pdf(inv_name):

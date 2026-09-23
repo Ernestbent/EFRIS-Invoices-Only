@@ -1,4 +1,27 @@
 const EFRIS_SEND_INVOICE_USER = 'reports@autozonepro.org';
+let efrisPdfRealtimeListenerRegistered = false;
+
+function registerEfrisPdfRealtimeListener() {
+    if (efrisPdfRealtimeListenerRegistered) {
+        return;
+    }
+
+    frappe.realtime.on('efris_invoice_pdf_attached', (message) => {
+        const frm = cur_frm;
+
+        if (
+            !frm ||
+            frm.doctype !== 'Sales Invoice' ||
+            frm.doc.name !== message?.invoice_name
+        ) {
+            return;
+        }
+
+        frm.reload_doc();
+    });
+
+    efrisPdfRealtimeListenerRegistered = true;
+}
 
 function getEfrisErrorMessage(error) {
     const responseJSON = error?.responseJSON || error?.xhr?.responseJSON || {};
@@ -396,6 +419,7 @@ function showEfrisItemSelectionDialog(frm) {
 
 frappe.ui.form.on('Sales Invoice', {
     refresh: function(frm) {
+        registerEfrisPdfRealtimeListener();
         fetchAllEfrisStockForRows(frm);
 
         [400, 1200, 2500].forEach((delay) => {
