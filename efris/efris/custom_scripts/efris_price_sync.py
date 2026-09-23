@@ -3,8 +3,10 @@ EFRIS automatic Item price synchronization.
 
 Purpose
 -------
-Detect changes to Item.custom_efris_price from Frappe's Version log and push
-the latest Item data to URA EFRIS using T130 MODIFY (operationType "102").
+Detect committed changes to Item.custom_efris_price from an Item document event
+and push the latest Item data to URA EFRIS using T130 MODIFY (operationType
+"102"). Changed Items are stored in a durable queue and sent in batches by one
+deduplicated background job.
 
 The implementation reuses the EFRIS integration plumbing already used by the
 existing Item T130 synchronization:
@@ -15,14 +17,8 @@ existing Item T130 synchronization:
 - response decryption
 - Integration Request logging
 
-Suggested scheduler:
-    "cron": {
-        "* * * * *": [
-            "efris.efris.background_tasks.price_sync.push_price_changes"
-        ]
-    }
-
-Adjust the module path above to wherever you save this file.
+An hourly recovery hook only retries rows left behind by a network failure or
+worker interruption. Normal synchronization is event-driven.
 """
 
 import base64
@@ -35,7 +31,7 @@ import frappe
 import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-from frappe.utils import add_to_date, get_datetime, now_datetime
+from frappe.utils import add_to_date, now_datetime
 from frappe.utils.data import strip_html
 
 from efris.efris.background_tasks.encryption import encrypt_dynamic_json
@@ -51,14 +47,17 @@ from efris.efris.custom_scripts.upload_invoice import (
 
 ## Configuration
 
-KEY = "efris_price_sync"
-FIELDS = ["custom_efris_price"]
-
 CHUNK_SIZE = 100
-QUIET_MIN = 2
-MAX_WAIT_MIN = 15
 MAX_ATTEMPTS = 5
 REJECT_RETRY_MIN = 30
+REQUEST_RETRY_MIN = 15
+MAX_ITEMS_PER_RUN = 1000
+
+QUEUE_DOCTYPE = "EFRIS Price Sync Queue"
+QUEUE_TABLE = "`tabEFRIS Price Sync Queue`"
+PRICE_FIELD = "custom_efris_price"
+PRICE_SYNC_JOB_ID = "efris_price_push"
+PRICE_SYNC_LOCK = "efris_price_push"
 
 T130_INTERFACE_CODE = "T130"
 T130_SERVICE_NAME = "T130 Automatic Price Sync"
@@ -76,70 +75,6 @@ EFRIS_UOM_MAPPING = {
     "liter": "102",
 }
 
-
-## State
-
-def default_state():
-    return {
-        "upto": None,
-        "rejected": {},
-        "req_fails": 0,
-        "wait_until": None,
-        "reject_retry": None,
-    }
-
-
-def load_state():
-    raw = frappe.defaults.get_global_default(KEY)
-
-    if not raw:
-        return default_state()
-
-    try:
-        state = json.loads(raw)
-    except (TypeError, ValueError):
-        frappe.log_error(
-            message=f"Invalid EFRIS price-sync state: {raw}",
-            title="EFRIS Price Sync State Error",
-        )
-        return default_state()
-
-    result = default_state()
-    result.update(state or {})
-    return result
-
-
-def save_state(state):
-    frappe.defaults.set_global_default(KEY, json.dumps(state))
-    frappe.db.commit()
-
-
-## Version/change detection
-
-def changed_rows(after):
-    """
-    Return Item Version rows created after `after` where one of FIELDS appears
-    in the Version data.
-
-    Version is used because Item already has track_changes enabled.
-    """
-    if not after:
-        return []
-
-    like_sql = " OR ".join(["data LIKE %s"] * len(FIELDS))
-    args = [f'%"{field}"%' for field in FIELDS]
-
-    return frappe.db.sql(
-        f"""
-        SELECT docname, modified
-        FROM `tabVersion`
-        WHERE ref_doctype = 'Item'
-          AND modified > %s
-          AND ({like_sql})
-        ORDER BY modified ASC
-        """,
-        tuple([str(after)] + args),
-    )
 
 
 ## T130 Item payload
@@ -734,244 +669,318 @@ def push_names(names):
     return rejected
 
 
-## Scheduler entry point
-
-def push_price_changes():
-    """
-    Cheap scheduler function intended to run every minute.
-
-    It only enqueues the long-running worker when there is actual work or a
-    rejected Item is due for retry.
-    """
-    now = now_datetime()
-    state = load_state()
-
-    if state["upto"]:
-        if (
-            state["wait_until"]
-            and now < get_datetime(state["wait_until"])
-        ):
-            return
-
-        retry_due = any(
-            value[1] < MAX_ATTEMPTS
-            for value in state["rejected"].values()
-        )
-
-        if not retry_due and not changed_rows(state["upto"]):
-            ## Prevent the Version query window from growing forever while the
-            ## system is idle.
-            if get_datetime(state["upto"]) < add_to_date(
-                now,
-                minutes=-30,
-            ):
-                state["upto"] = str(
-                    add_to_date(now, minutes=-10)
-                )
-                save_state(state)
-
-            return
-
-    frappe.enqueue(
-        f"{__name__}.run_locked",
-        queue="long",
-        timeout=1500,
-        job_id="efris_price_push",
-        deduplicate=True,
-    )
+## Event-driven queue
 
 
-def run_locked():
-    """
-    MySQL/MariaDB advisory lock provides an additional guard even if queue
-    deduplication is bypassed or multiple workers attempt the same job.
-    """
-    result = frappe.db.sql(
-        "SELECT GET_LOCK('efris_price_push', 0)"
-    )
+def _normalized_price(value):
+    return str(value or "").replace(",", "").strip()
 
-    if not result or not result[0][0]:
+
+def queue_item_price_change(doc, method=None):
+    """Persist a queue row only when an existing Item's EFRIS price changes."""
+    previous = doc.get_doc_before_save()
+
+    if not previous:
         return
 
-    try:
-        run()
-    finally:
-        frappe.db.sql(
-            "SELECT RELEASE_LOCK('efris_price_push')"
-        )
-
-
-## Synchronization engine
-
-def run():
-    now = now_datetime()
-    state = load_state()
-
-    ## First activation starts tracking from now. It intentionally does not
-    ## upload historical Item changes.
-    if not state["upto"]:
-        state["upto"] = str(now)
-        save_state(state)
+    if _normalized_price(previous.get(PRICE_FIELD)) == _normalized_price(doc.get(PRICE_FIELD)):
         return
 
-    if (
-        state["wait_until"]
-        and now < get_datetime(state["wait_until"])
-    ):
+    if not str(doc.get("custom_efris_product_code") or "").strip():
         return
 
-    rows = changed_rows(state["upto"])
-    cutoff = add_to_date(now, minutes=-QUIET_MIN)
+    mark_item_for_price_sync(doc.name)
+    _enqueue_after_commit_once()
 
-    if rows:
-        newest = max(row[1] for row in rows)
-        oldest = min(row[1] for row in rows)
 
-        ## An import/bulk edit appears to still be producing Item Versions.
-        if (
-            newest > cutoff
-            and oldest > add_to_date(
-                now,
-                minutes=-MAX_WAIT_MIN,
-            )
-        ):
-            return
-
-    names = {
-        row[0]
-        for row in rows
-        if row[1] <= cutoff
+def mark_item_for_price_sync(item_name):
+    """Create or reset the durable queue marker inside the Item transaction."""
+    values = {
+        "status": "Pending",
+        "requested_at": now_datetime(),
+        "attempts": 0,
+        "last_attempt_at": None,
+        "retry_after": None,
+        "last_error": None,
     }
 
-    rejected_state = state["rejected"]
-
-    if (
-        rejected_state
-        and now >= get_datetime(
-            state["reject_retry"] or now
-        )
-    ):
-        names |= {
-            item_name
-            for item_name, value in rejected_state.items()
-            if value[1] < MAX_ATTEMPTS
-        }
-
-    if not names:
+    if frappe.db.exists(QUEUE_DOCTYPE, item_name):
+        frappe.db.set_value(QUEUE_DOCTYPE, item_name, values, update_modified=True)
         return
 
     try:
-        rejected_now = push_names(sorted(names))
+        frappe.get_doc(
+            {
+                "doctype": QUEUE_DOCTYPE,
+                "item_code": item_name,
+                **values,
+            }
+        ).insert(ignore_permissions=True)
+    except frappe.DuplicateEntryError:
+        # Another request may have queued the same Item concurrently.
+        frappe.db.set_value(QUEUE_DOCTYPE, item_name, values, update_modified=True)
 
+
+def _enqueue_after_commit_once():
+    flag = "efris_price_sync_enqueue_registered"
+    if getattr(frappe.flags, flag, False):
+        return
+
+    setattr(frappe.flags, flag, True)
+    frappe.db.after_commit.add(_safe_enqueue_pending_price_sync)
+
+
+def _safe_enqueue_pending_price_sync():
+    try:
+        enqueue_pending_price_sync()
     except Exception:
-        ## Keep the same synchronization window. The scheduler will retry it.
+        # The queue row is already committed. The hourly recovery hook will
+        # enqueue it if Redis/RQ is temporarily unavailable.
+        frappe.log_error(
+            frappe.get_traceback(),
+            "EFRIS Price Sync Enqueue Failed",
+        )
+    finally:
+        setattr(frappe.flags, "efris_price_sync_enqueue_registered", False)
+
+
+def _has_due_queue_rows():
+    return bool(
+        frappe.db.sql(
+            f"""
+            SELECT name
+            FROM {QUEUE_TABLE}
+            WHERE status IN ('Pending', 'Retrying')
+              AND (retry_after IS NULL OR retry_after <= %s)
+            LIMIT 1
+            """,
+            (now_datetime(),),
+        )
+    )
+
+
+def enqueue_pending_price_sync():
+    """Enqueue one batch worker only when at least one queue row is due."""
+    if not _has_due_queue_rows():
+        return False
+
+    frappe.enqueue(
+        f"{__name__}.run_pending_price_sync",
+        queue="long",
+        timeout=1500,
+        job_id=PRICE_SYNC_JOB_ID,
+        deduplicate=True,
+    )
+    return True
+
+
+def retry_pending_price_sync():
+    """Hourly recovery for request failures or an interrupted worker."""
+    return enqueue_pending_price_sync()
+
+
+def push_price_changes():
+    """Backward-compatible entry point for an old scheduled job record."""
+    return enqueue_pending_price_sync()
+
+
+def _get_due_queue_rows(limit):
+    return frappe.db.sql(
+        f"""
+        SELECT name, item_code, modified, attempts
+        FROM {QUEUE_TABLE}
+        WHERE status IN ('Pending', 'Retrying')
+          AND (retry_after IS NULL OR retry_after <= %s)
+        ORDER BY requested_at ASC, creation ASC
+        LIMIT %s
+        """,
+        (now_datetime(), int(limit)),
+        as_dict=True,
+    )
+
+
+def _delete_queue_row_if_unchanged(row):
+    frappe.db.sql(
+        f"DELETE FROM {QUEUE_TABLE} WHERE name = %s AND modified = %s",
+        (row.name, row.modified),
+    )
+
+
+def _mark_queue_retry_if_unchanged(
+    row,
+    error,
+    retry_minutes,
+    stop_after_max_attempts,
+):
+    attempts = int(row.attempts or 0) + 1
+    is_failed = stop_after_max_attempts and attempts >= MAX_ATTEMPTS
+    attempted_at = now_datetime()
+    retry_after = None if is_failed else add_to_date(attempted_at, minutes=retry_minutes)
+
+    frappe.db.sql(
+        f"""
+        UPDATE {QUEUE_TABLE}
+        SET status = %s,
+            attempts = %s,
+            last_attempt_at = %s,
+            retry_after = %s,
+            last_error = %s,
+            modified = %s,
+            modified_by = %s
+        WHERE name = %s
+          AND modified = %s
+        """,
+        (
+            "Failed" if is_failed else "Retrying",
+            attempts,
+            attempted_at,
+            retry_after,
+            str(error or "Unknown EFRIS error")[:500],
+            attempted_at,
+            frappe.session.user,
+            row.name,
+            row.modified,
+        ),
+    )
+
+
+def _process_queue_batch(rows):
+    names = [row.item_code for row in rows]
+
+    try:
+        rejected = push_names(names)
+    except Exception as exc:
         frappe.log_error(
             frappe.get_traceback(),
             "EFRIS T130 Price Sync Failed",
         )
 
-        state["req_fails"] += 1
-
-        state["wait_until"] = str(
-            add_to_date(
-                now,
-                minutes=min(
-                    state["req_fails"] * 5,
-                    60,
-                ),
+        for row in rows:
+            _mark_queue_retry_if_unchanged(
+                row,
+                exc,
+                REQUEST_RETRY_MIN,
+                stop_after_max_attempts=False,
             )
+
+        frappe.db.commit()
+        return {"completed": 0, "retrying": len(rows), "failed": 0}
+
+    completed = 0
+    retrying = 0
+    failed = 0
+
+    for row in rows:
+        if row.item_code not in rejected:
+            _delete_queue_row_if_unchanged(row)
+            completed += 1
+            continue
+
+        next_attempt = int(row.attempts or 0) + 1
+        _mark_queue_retry_if_unchanged(
+            row,
+            rejected[row.item_code],
+            REJECT_RETRY_MIN,
+            stop_after_max_attempts=True,
         )
 
-        save_state(state)
-
-        return
-
-    for item_name in names:
-        if item_name in rejected_now:
-            reason = str(rejected_now[item_name])
-            short_reason = reason[:60]
-
-            old = rejected_state.get(
-                item_name,
-                ["", 0],
-            )
-
-            rejected_state[item_name] = [
-                short_reason,
-                old[1] + 1,
-            ]
-
+        if next_attempt >= MAX_ATTEMPTS:
+            failed += 1
         else:
-            rejected_state.pop(
-                item_name,
-                None,
-            )
+            retrying += 1
 
-    state["rejected"] = rejected_state
-    state["upto"] = str(cutoff)
-    state["req_fails"] = 0
-    state["wait_until"] = None
-    state["reject_retry"] = str(
-        add_to_date(
-            now,
-            minutes=REJECT_RETRY_MIN,
-        )
-    )
+    frappe.db.commit()
+    return {"completed": completed, "retrying": retrying, "failed": failed}
 
-    save_state(state)
+
+def run_pending_price_sync():
+    """Drain due queue rows under a site-specific MariaDB advisory lock."""
+    site = getattr(frappe.local, "site", "site")
+    lock_name = f"{PRICE_SYNC_LOCK}:{site}"[:64]
+    result = frappe.db.sql("SELECT GET_LOCK(%s, 0)", (lock_name,))
+
+    if not result or not result[0][0]:
+        return {"skipped": True, "reason": "Price-sync worker is already running"}
+
+    totals = {"processed": 0, "completed": 0, "retrying": 0, "failed": 0}
+
+    try:
+        while totals["processed"] < MAX_ITEMS_PER_RUN:
+            limit = min(CHUNK_SIZE, MAX_ITEMS_PER_RUN - totals["processed"])
+            rows = _get_due_queue_rows(limit)
+            if not rows:
+                break
+
+            result = _process_queue_batch(rows)
+            totals["processed"] += len(rows)
+            totals["completed"] += result["completed"]
+            totals["retrying"] += result["retrying"]
+            totals["failed"] += result["failed"]
+
+        return totals
+    finally:
+        frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock_name,))
+
+
+def run_locked():
+    """Backward-compatible alias for already queued jobs from the old code."""
+    return run_pending_price_sync()
+
+
+def run():
+    """Backward-compatible alias for callers of the old synchronization engine."""
+    return run_pending_price_sync()
 
 
 ## T109 pre-invoice protection
 
+
 def sync_prices_before_invoice(doc):
-    """
-    Call this immediately before the existing T109 invoice upload.
-
-    It catches invoice Items whose price changed recently but has not yet been
-    picked up by the scheduled quiet-period batch.
-
-    This function intentionally raises when EFRIS rejects an Item, because
-    sending T109 immediately after a known T130 price rejection could leave
-    EFRIS with a different Item price from ERPNext.
-    """
-    state = load_state()
-    upto = state.get("upto")
-
-    if not upto:
-        return
-
-    invoice_codes = {
-        row.item_code
-        for row in (doc.items or [])
-        if row.item_code
-    }
+    """Synchronize queued invoice Items before T109 when explicitly called."""
+    invoice_codes = sorted(
+        {
+            row.item_code
+            for row in (doc.items or [])
+            if row.item_code
+        }
+    )
 
     if not invoice_codes:
         return
 
-    names = sorted({
-        row[0]
-        for row in changed_rows(upto)
-        if row[0] in invoice_codes
-    })
+    rows = frappe.db.sql(
+        f"""
+        SELECT name, item_code, modified, attempts
+        FROM {QUEUE_TABLE}
+        WHERE item_code IN %s
+        """,
+        (tuple(invoice_codes),),
+        as_dict=True,
+    )
 
-    if not names:
+    if not rows:
         return
+
+    names = [row.item_code for row in rows]
 
     try:
         rejected = push_names(names)
+
+        for row in rows:
+            if row.item_code not in rejected:
+                _delete_queue_row_if_unchanged(row)
+
+        frappe.db.commit()
 
         if rejected:
             details = "; ".join(
                 f"{item}: {reason}"
                 for item, reason in rejected.items()
             )
-
             raise EFRISIntegrationError(
                 "EFRIS price synchronization rejected "
                 f"invoice Item(s): {details}"
             )
-
     except Exception:
         frappe.log_error(
             frappe.get_traceback(),

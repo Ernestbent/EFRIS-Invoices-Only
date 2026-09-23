@@ -144,6 +144,9 @@ doctype_js = {
 # Hook on document methods and events
 
 doc_events = {
+	"Item": {
+		"on_update": "efris.efris.custom_scripts.efris_price_sync.queue_item_price_change",
+	},
 	"Sales Invoice": {
 		"before_save": "efris.efris.custom_scripts.upload_invoice.sync_sales_invoice_efris_prices",
 		"on_update_after_submit": "efris.efris.custom_scripts.efris_stock_ledger.process_sales_invoice_efris_stock_movement",
@@ -158,16 +161,17 @@ scheduler_events = {
 		"0 1 * * *": [
 			"efris.efris.background_tasks.efris_key_manager.refresh_daily_efris_aes_key"
 		],
-		"0 0 * * *": [
-			"efris.efris.background_tasks.efris_price_sync.sync_daily_efris_prices"
-		],
+		# Disabled: this T127 job only populates the unused EFRIS Prices DocType.
+		# "0 0 * * *": [
+		# 	"efris.efris.background_tasks.efris_price_sync.sync_daily_efris_prices"
+		# ],
 		"5 0 * * *": [
 			"efris.efris.background_tasks.efris_stock_sync.sync_daily_efris_stock"
 		],
-        "* * * * *": [
-            "efris.efris.custom_scripts.efris_price_sync.push_price_changes"
-        ],
-	}
+	},
+	"hourly": [
+		"efris.efris.custom_scripts.efris_price_sync.retry_pending_price_sync"
+	],
 }
 # Testing
 # -------

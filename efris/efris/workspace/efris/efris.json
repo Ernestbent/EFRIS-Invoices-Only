@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\":\"V895i1epZz\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">EFRIS</span>\",\"col\":12}},{\"id\":\"j-31JrvY5m\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"EFRIS Logs\",\"col\":4}},{\"id\":\"Zro3TL86bf\",\"type\":\"card\",\"data\":{\"card_name\":\"EFRIS Settings\",\"col\":4}}]",
+ "content": "[{\"id\":\"V895i1epZz\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>EFRIS Invoices</b></span>\",\"col\":12}},{\"id\":\"efrisFiscalToday\",\"type\":\"number_card\",\"data\":{\"number_card_name\":\"Fiscalised Today\",\"col\":3}},{\"id\":\"efrisFiscalTotal\",\"type\":\"number_card\",\"data\":{\"number_card_name\":\"Total Fiscalised Invoices\",\"col\":3}},{\"id\":\"efrisViewAll\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"View All EFRIS Invoices\",\"col\":3}},{\"id\":\"efrisRecent\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"Recent EFRIS Invoices\",\"col\":6}},{\"id\":\"efrisReports\",\"type\":\"card\",\"data\":{\"card_name\":\"EFRIS Reports\",\"col\":4}},{\"id\":\"efrisAdminSpacer\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"efrisAdminHeader\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Logs &amp; Settings</b></span>\",\"col\":12}},{\"id\":\"j-31JrvY5m\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"EFRIS Logs\",\"col\":4}},{\"id\":\"Zro3TL86bf\",\"type\":\"card\",\"data\":{\"card_name\":\"EFRIS Settings\",\"col\":4}}]",
  "creation": "2026-07-05 21:06:02.671902",
  "custom_blocks": [],
  "docstatus": 0,
@@ -13,6 +13,26 @@
  "is_hidden": 0,
  "label": "EFRIS",
  "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "EFRIS Reports",
+   "link_count": 1,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "dependencies": "Sales Invoice",
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "EFRIS Invoice Register",
+   "link_count": 0,
+   "link_to": "EFRIS Invoice Register",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
   {
    "hidden": 0,
    "is_query_report": 0,
@@ -43,15 +63,29 @@
    "type": "Link"
   }
  ],
- "modified": "2026-07-05 21:07:23.957254",
+ "modified": "2026-09-23 13:30:00.000000",
  "modified_by": "Administrator",
  "module": "Efris",
  "name": "EFRIS",
- "number_cards": [],
+ "number_cards": [
+  {
+   "label": "Fiscalised Today",
+   "number_card_name": "Fiscalised Today"
+  },
+  {
+   "label": "Total Fiscalised Invoices",
+   "number_card_name": "Total Fiscalised Invoices"
+  }
+ ],
  "owner": "Administrator",
  "parent_page": "",
  "public": 1,
  "quick_lists": [
+  {
+   "document_type": "Sales Invoice",
+   "label": "Recent EFRIS Invoices",
+   "quick_list_filter": "[[\"Sales Invoice\",\"custom_efris_synced\",\"=\",1,false],[\"Sales Invoice\",\"docstatus\",\"=\",1,false]]"
+  },
   {
    "document_type": "Integration Request",
    "label": "EFRIS Logs",
@@ -60,6 +94,16 @@
  ],
  "roles": [],
  "sequence_id": 6.0,
- "shortcuts": [],
+ "shortcuts": [
+  {
+   "color": "Green",
+   "doc_view": "List",
+   "format": "{} Fiscalised",
+   "label": "View All EFRIS Invoices",
+   "link_to": "Sales Invoice",
+   "stats_filter": "[[\"Sales Invoice\",\"custom_efris_synced\",\"=\",1,false],[\"Sales Invoice\",\"docstatus\",\"=\",1,false]]",
+   "type": "DocType"
+  }
+ ],
  "title": "EFRIS"
 }

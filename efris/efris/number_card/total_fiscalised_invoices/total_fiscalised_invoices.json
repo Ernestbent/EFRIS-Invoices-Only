@@ -1,0 +1,21 @@
+{
+ "creation": "2026-09-23 13:30:00.000000",
+ "docstatus": 0,
+ "doctype": "Number Card",
+ "document_type": "Sales Invoice",
+ "filters_json": "[[\"Sales Invoice\",\"docstatus\",\"=\",\"1\",false],[\"Sales Invoice\",\"custom_efris_synced\",\"=\",\"1\",false]]",
+ "function": "Count",
+ "idx": 0,
+ "is_public": 1,
+ "is_standard": 1,
+ "label": "Total Fiscalised Invoices",
+ "modified": "2026-09-23 13:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Efris",
+ "name": "Total Fiscalised Invoices",
+ "owner": "Administrator",
+ "show_full_number": 1,
+ "show_percentage_stats": 0,
+ "stats_time_interval": "Daily",
+ "type": "Document Type"
+}

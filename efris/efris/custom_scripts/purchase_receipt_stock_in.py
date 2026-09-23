@@ -217,7 +217,7 @@ def build_t131_payload(doc, aggregated_items):
             "supplierTin": str(supplier_tin).strip(),
             "supplierName": doc.supplier_name or "",
             "adjustType": "",
-            "remarks": getattr(doc, "remarks", "") or "",
+            "remarks": "",
             "stockInDate": str(doc.posting_date),
             "stockInType": get_purchase_receipt_stock_in_type(doc),
             "productionBatchNo": "",
