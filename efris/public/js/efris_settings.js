@@ -38,5 +38,33 @@ frappe.ui.form.on('EFRIS Settings', {
             __('Actions')
         );
 
+        frm.add_custom_button(
+            __('Refresh Stock'),
+            function() {
+                frappe.call({
+                    method: 'efris.efris.background_tasks.efris_stock_sync.sync_t127_opening_stock',
+                    freeze: true,
+                    freeze_message: __('Refreshing stock from EFRIS...'),
+                    callback: function(response) {
+                        if (response.message && response.message.success) {
+                            frappe.msgprint({
+                                title: __('EFRIS Stock Refreshed'),
+                                indicator: 'green',
+                                message: __(
+                                    '{0} stock records received and {1} ledger rows updated across {2} page(s).',
+                                    [
+                                        response.message.records_received,
+                                        response.message.ledger_rows_written,
+                                        response.message.pages_fetched,
+                                    ]
+                                ),
+                            });
+                        }
+                    }
+                });
+            },
+            __('Actions')
+        );
+
     }
 });
