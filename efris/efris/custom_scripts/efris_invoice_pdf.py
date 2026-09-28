@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import frappe
 import requests
+from frappe.utils import add_days, get_datetime, today
 from frappe.utils.file_manager import save_file
 
 
@@ -181,6 +182,57 @@ def save_ura_invoice_pdf(inv_name):
     )
 
     return file_doc
+
+
+@frappe.whitelist()
+def get_fiscalised_today_card(filters=None):
+    """Count invoices whose official EFRIS PDF was attached today."""
+    if not frappe.has_permission("Sales Invoice", ptype="read"):
+        frappe.throw(
+            "You need read permission on Sales Invoice to view this card.",
+            frappe.PermissionError,
+        )
+
+    attachment_date = today()
+    start_datetime = get_datetime(attachment_date)
+    end_datetime = add_days(start_datetime, 1)
+    attached_invoice_names = frappe.get_all(
+        "File",
+        filters=[
+            ["File", "attached_to_doctype", "=", "Sales Invoice"],
+            ["File", "file_type", "=", "PDF"],
+            ["File", "file_name", "like", "%-EFRIS%.pdf"],
+            ["File", "creation", ">=", start_datetime],
+            ["File", "creation", "<", end_datetime],
+        ],
+        pluck="attached_to_name",
+    )
+
+    invoice_names = []
+    if attached_invoice_names:
+        invoice_names = frappe.get_list(
+            "Sales Invoice",
+            filters=[
+                ["Sales Invoice", "name", "in", list(set(attached_invoice_names))],
+                ["Sales Invoice", "docstatus", "=", 1],
+                ["Sales Invoice", "custom_efris_synced", "=", 1],
+            ],
+            pluck="name",
+            limit_page_length=0,
+        )
+
+    return {
+        "value": len(invoice_names),
+        "fieldtype": "Int",
+        "route": ["query-report", "EFRIS Invoice Register"],
+        "route_options": {
+            "from_date": "",
+            "to_date": "",
+            "company": "",
+            "pdf_from_date": attachment_date,
+            "pdf_to_date": attachment_date,
+        },
+    }
 
 
 def enqueue_ura_invoice_pdf(inv_name):

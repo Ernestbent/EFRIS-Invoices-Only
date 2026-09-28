@@ -5,15 +5,25 @@ frappe.query_reports["EFRIS Invoice Register"] = {
 	filters: [
 		{
 			fieldname: "from_date",
-			label: __("From Date"),
+			label: __("Invoice From Date"),
 			fieldtype: "Date",
 			default: frappe.datetime.month_start(),
 		},
 		{
 			fieldname: "to_date",
-			label: __("To Date"),
+			label: __("Invoice To Date"),
 			fieldtype: "Date",
 			default: frappe.datetime.get_today(),
+		},
+		{
+			fieldname: "pdf_from_date",
+			label: __("PDF Attached From"),
+			fieldtype: "Date",
+		},
+		{
+			fieldname: "pdf_to_date",
+			label: __("PDF Attached To"),
+			fieldtype: "Date",
 		},
 		{
 			fieldname: "company",

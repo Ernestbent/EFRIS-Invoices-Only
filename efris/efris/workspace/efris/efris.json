@@ -1,7 +1,7 @@
 {
  "charts": [],
- "content": "[{\"id\":\"V895i1epZz\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>EFRIS Invoices</b></span>\",\"col\":12}},{\"id\":\"efrisFiscalToday\",\"type\":\"number_card\",\"data\":{\"number_card_name\":\"Fiscalised Today\",\"col\":3}},{\"id\":\"efrisFiscalTotal\",\"type\":\"number_card\",\"data\":{\"number_card_name\":\"Total Fiscalised Invoices\",\"col\":3}},{\"id\":\"efrisViewAll\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"View All EFRIS Invoices\",\"col\":3}},{\"id\":\"efrisRecent\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"Recent EFRIS Invoices\",\"col\":6}},{\"id\":\"efrisReports\",\"type\":\"card\",\"data\":{\"card_name\":\"EFRIS Reports\",\"col\":4}},{\"id\":\"efrisAdminSpacer\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"efrisAdminHeader\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Logs &amp; Settings</b></span>\",\"col\":12}},{\"id\":\"j-31JrvY5m\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"EFRIS Logs\",\"col\":4}},{\"id\":\"Zro3TL86bf\",\"type\":\"card\",\"data\":{\"card_name\":\"EFRIS Settings\",\"col\":4}}]",
- "creation": "2026-07-05 21:06:02.671902",
+ "content": "[{\"id\":\"V895i1epZz\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>EFRIS Invoices</b></span>\",\"col\":12}},{\"id\":\"efrisFiscalToday\",\"type\":\"number_card\",\"data\":{\"number_card_name\":\"Fiscalised Today\",\"col\":3}},{\"id\":\"efrisFiscalTotal\",\"type\":\"number_card\",\"data\":{\"number_card_name\":\"Total Fiscalised Invoices\",\"col\":3}},{\"id\":\"efrisViewAll\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"View All EFRIS Invoices\",\"col\":3}},{\"id\":\"efrisReports\",\"type\":\"card\",\"data\":{\"card_name\":\"EFRIS Reports\",\"col\":4}},{\"id\":\"efrisAdminSpacer\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"efrisAdminHeader\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Logs &amp; Settings</b></span>\",\"col\":12}},{\"id\":\"j-31JrvY5m\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"EFRIS Logs\",\"col\":4}},{\"id\":\"Zro3TL86bf\",\"type\":\"card\",\"data\":{\"card_name\":\"EFRIS Settings\",\"col\":4}}]",
+ "creation": "2026-09-28 16:58:46.639898",
  "custom_blocks": [],
  "docstatus": 0,
  "doctype": "Workspace",
@@ -17,7 +17,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "EFRIS Reports",
-   "link_count": 1,
+   "link_count": 4,
    "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
@@ -29,6 +29,39 @@
    "label": "EFRIS Invoice Register",
    "link_count": 0,
    "link_to": "EFRIS Invoice Register",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "dependencies": "Sales Invoice",
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "EFRIS Sales Summary",
+   "link_count": 0,
+   "link_to": "EFRIS Sales Summary",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "dependencies": "EFRIS Stock Ledger Entry",
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "EFRIS Stock Ledger",
+   "link_count": 0,
+   "link_to": "EFRIS Stock Ledger",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "dependencies": "Item",
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "EFRIS and ERPNext Difference Stock",
+   "link_count": 0,
+   "link_to": "EFRIS and ERPNext Difference Stock",
    "link_type": "Report",
    "onboard": 0,
    "type": "Link"
@@ -63,7 +96,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-09-23 13:30:00.000000",
+ "modified": "2026-09-28 17:03:00.398109",
  "modified_by": "Administrator",
  "module": "Efris",
  "name": "EFRIS",
@@ -82,17 +115,16 @@
  "public": 1,
  "quick_lists": [
   {
-   "document_type": "Sales Invoice",
-   "label": "Recent EFRIS Invoices",
-   "quick_list_filter": "[[\"Sales Invoice\",\"custom_efris_synced\",\"=\",1,false],[\"Sales Invoice\",\"docstatus\",\"=\",1,false]]"
-  },
-  {
    "document_type": "Integration Request",
    "label": "EFRIS Logs",
    "quick_list_filter": "[]"
   }
  ],
- "roles": [],
+ "roles": [
+  {
+   "role": "EFRIS"
+  }
+ ],
  "sequence_id": 6.0,
  "shortcuts": [
   {
